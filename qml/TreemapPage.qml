@@ -1,0 +1,111 @@
+pragma ComponentBehavior: Bound
+
+import QtQuick
+import QtQuick.Controls
+import QtQuick.Layouts
+import IgittStyle as Styles
+import Unravel
+
+// The code as a treemap: folders hold files, files hold their classes and
+// functions; area is size, colour a metric. Double-click zooms into a folder.
+Item {
+    id: view
+    property bool active: false
+
+    ColumnLayout {
+        anchors.fill: parent
+        spacing: 0
+        Pane {
+            Layout.fillWidth: true
+            padding: Styles.Primitives.spacing.sp075
+            background: Rectangle { color: Theme.s.background_default }
+            RowLayout {
+                width: parent.width
+                spacing: Styles.Primitives.spacing.sp100
+                IconButton {
+                    iconName: "arrow-up"
+                    enabled: map.rootPath !== ""
+                    onClicked: {
+                        const p = map.rootPath
+                        const slash = p.lastIndexOf("/")
+                        map.rootPath = slash < 0 ? "" : p.substring(0, slash)
+                    }
+                    ToolTip.visible: hovered
+                    ToolTip.text: qsTr("Up a folder")
+                }
+                Label {
+                    text: map.rootPath === "" ? qsTr("Whole project") : map.rootPath
+                    font.weight: Styles.Primitives.fontWeight.semiBold
+                }
+                ToolSeparator {}
+                Label { text: qsTr("Size"); color: Theme.textMuted }
+                ComboBox {
+                    id: sizeBox
+                    styles: [Styles.FieldStyle.small]
+                    model: [qsTr("Lines"), qsTr("Statements"), qsTr("Same for all")]
+                    implicitWidth: 130
+                }
+                Label { text: qsTr("Colour"); color: Theme.textMuted }
+                ComboBox {
+                    id: colorBox
+                    styles: [Styles.FieldStyle.small]
+                    model: [qsTr("Complexity"), qsTr("Callers (fan-in)"), qsTr("Uses (fan-out)"), qsTr("Looks unused"),
+                            qsTr("Findings"), qsTr("Nesting"), qsTr("Kind")]
+                    implicitWidth: 160
+                }
+                Item { Layout.fillWidth: true }
+                Label { text: map.legendLow; font: Theme.smallFont; color: Theme.textMuted }
+                Rectangle {
+                    visible: colorBox.currentIndex !== 6
+                    width: 110; height: 8; radius: 4
+                    gradient: Gradient {
+                        orientation: Gradient.Horizontal
+                        GradientStop { position: 0; color: Theme.viewColors.low }
+                        GradientStop { position: 0.5; color: Theme.viewColors.mid }
+                        GradientStop { position: 1; color: Theme.viewColors.high }
+                    }
+                }
+                Label { text: map.legendHigh; font: Theme.smallFont; color: Theme.textMuted }
+            }
+        }
+        Rectangle {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            color: Theme.canvas
+            TreemapView {
+                id: map
+                anchors.fill: parent
+                anchors.margins: 4
+                colorMetric: colorBox.currentIndex
+                sizeMetric: sizeBox.currentIndex
+                colors: Theme.viewColors
+                activeSymbol: Session.activeSymbol
+                HoverHandler {
+                    id: hover
+                    onPointChanged: map.hover(point.position.x, point.position.y)
+                }
+                TapHandler {
+                    onTapped: point => {
+                        const it = map.itemAt(point.position.x, point.position.y)
+                        if (it.symbol !== undefined && it.symbol >= 0) Session.activate(it.symbol)
+                        else if (it.file !== undefined && it.file >= 0) Session.activateFile(it.file, 0)
+                    }
+                    onDoubleTapped: point => {
+                        const it = map.itemAt(point.position.x, point.position.y)
+                        if (it.enclosingFolder !== undefined && it.enclosingFolder !== map.rootPath)
+                            map.rootPath = it.enclosingFolder
+                    }
+                }
+                ToolTip {
+                    visible: hover.hovered && map.hoveredInfo.name !== undefined
+                    x: hover.point.position.x + 16
+                    y: hover.point.position.y + 16
+                    text: map.hoveredInfo.name === undefined ? "" :
+                          map.hoveredInfo.name + "\n" + map.hoveredInfo.kind + " · " + Math.round(map.hoveredInfo.size)
+                          + (sizeBox.currentIndex === 0 ? qsTr(" lines") : "") + (map.hoveredInfo.symbol >= 0 && colorBox.currentIndex < 6
+                          ? " · " + colorBox.currentText.toLowerCase() + " " + Math.round(map.hoveredInfo.value * 10) / 10 : "")
+                }
+            }
+        }
+    }
+}
