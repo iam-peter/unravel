@@ -39,6 +39,7 @@ Item {
                     implicitWidth: 96
                     textFromValue: v => v === 0 ? qsTr("all") : String(v)
                 }
+                FoldMenu {}
                 Item { Layout.fillWidth: true }
                 Label {
                     color: Theme.textMuted
@@ -87,6 +88,7 @@ Item {
                     TapHandler {
                         onTapped: point => {
                             const n = matrix.nodeInfo(point.position.x, point.position.y)
+                            if (n.folder !== undefined) { Session.unfold(n.folder); return }
                             if (n.symbol !== undefined) { Session.activate(n.symbol); return }
                             if (n.file !== undefined) { Session.activateFile(n.file, 0); return }
                             matrix.select(point.position.x, point.position.y)

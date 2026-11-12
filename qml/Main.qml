@@ -29,6 +29,7 @@ ApplicationWindow {
         { id: "treemap", name: qsTr("Treemap"), icon: "layout-grid", tip: qsTr("The code by size, coloured by a metric") },
         { id: "metrics", name: qsTr("Metrics"), icon: "table", tip: qsTr("Every function, class, file and module measured") },
         { id: "findings", name: qsTr("Review"), icon: "scan-search", tip: qsTr("What deserves a reviewer's attention") },
+        { id: "changes", name: qsTr("Changes"), icon: "git-commit-horizontal", tip: qsTr("Only the code that chosen commits changed, and what it touches") },
     ]
     property int currentView: 0
     function showView(id) {
@@ -101,6 +102,7 @@ ApplicationWindow {
     Shortcut { sequences: ["Ctrl+6"]; onActivated: win.currentView = 5 }
     Shortcut { sequences: ["Ctrl+7"]; onActivated: win.currentView = 6 }
     Shortcut { sequences: ["Ctrl+8"]; onActivated: win.currentView = 7 }
+    Shortcut { sequences: ["Ctrl+9"]; onActivated: win.currentView = 8 }
 
     // --- Tool bar -------------------------------------------------------------
 
@@ -300,6 +302,7 @@ ApplicationWindow {
                 TreemapPage { active: StackLayout.isCurrentItem }
                 MetricsView { active: StackLayout.isCurrentItem }
                 FindingsView { active: StackLayout.isCurrentItem; onShowView: id => win.showView(id) }
+                ChangesView { active: StackLayout.isCurrentItem }
             }
         }
 

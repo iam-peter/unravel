@@ -7,6 +7,11 @@
 #include <QPainter>
 #include <QPainterPathStroker>
 #include <QQuickWindow>
+#include <QSGFlatColorMaterial>
+#include <QSGGeometryNode>
+#include <QSGTextNode>
+#include <QSGTransformNode>
+#include <QSGOpacityNode>
 #include <QtMath>
 
 #include <algorithm>
@@ -14,6 +19,7 @@
 
 #include "layout.h"
 #include "session.h"
+#include "sgutil.h"
 
 using namespace Unravel;
 
@@ -55,30 +61,141 @@ QString kindKey(int kind)
     }
 }
 
-void arrowHead(QPainter *p, const QPointF &tip, const QPointF &from, double size, bool hollow, const QColor &fill,
-               const QColor &background)
-{
-    QPointF d = tip - from;
-    const double len = std::hypot(d.x(), d.y());
-    if (len < 0.001)
-        return;
-    d /= len;
-    const QPointF n(-d.y(), d.x());
-    const QPointF base = tip - d * size;
-    QPolygonF tri;
-    tri << tip << base + n * size * 0.5 << base - n * size * 0.5;
-    p->setBrush(hollow ? background : fill);
-    p->drawPolygon(tri);
-}
-
 } // namespace
 
 // --- EdgeLayer -----------------------------------------------------------------------
 
-EdgeLayer::EdgeLayer(QQuickItem *parent)
-    : QQuickPaintedItem(parent)
+namespace {
+
+using Vertex = QSGGeometry::Point2D;
+
+// Lines as triangles: two per segment, the width in scene units
+void addSegment(QVector<Vertex> &v, const QPointF &a, const QPointF &b, double halfWidth)
 {
-    setAntialiasing(true);
+    const QPointF d = b - a;
+    const double len = std::hypot(d.x(), d.y());
+    if (len < 1e-6)
+        return;
+    const QPointF n(-d.y() / len * halfWidth, d.x() / len * halfWidth);
+    const QPointF p1 = a + n, p2 = a - n, p3 = b + n, p4 = b - n;
+    v.append({float(p1.x()), float(p1.y())});
+    v.append({float(p2.x()), float(p2.y())});
+    v.append({float(p3.x()), float(p3.y())});
+    v.append({float(p3.x()), float(p3.y())});
+    v.append({float(p2.x()), float(p2.y())});
+    v.append({float(p4.x()), float(p4.y())});
+}
+
+void addTriangle(QVector<Vertex> &v, const QPointF &a, const QPointF &b, const QPointF &c)
+{
+    v.append({float(a.x()), float(a.y())});
+    v.append({float(b.x()), float(b.y())});
+    v.append({float(c.x()), float(c.y())});
+}
+
+// The polyline without its last `cut` units, where the arrow sits
+QPolygonF shortened(const QPolygonF &poly, double cut)
+{
+    QPolygonF out = poly;
+    while (out.size() >= 2 && cut > 0) {
+        const QPointF a = out[out.size() - 2], b = out.last();
+        const double len = std::hypot(b.x() - a.x(), b.y() - a.y());
+        if (len > cut) {
+            out.last() = b + (a - b) * (cut / len);
+            break;
+        }
+        cut -= len;
+        out.removeLast();
+    }
+    return out;
+}
+
+void addPolyline(QVector<Vertex> &v, const QPolygonF &poly, double halfWidth, bool dashed)
+{
+    if (!dashed) {
+        for (qsizetype i = 1; i < poly.size(); ++i)
+            addSegment(v, poly[i - 1], poly[i], halfWidth);
+        return;
+    }
+    // 6 on, 4 off, carried over the bends
+    const double on = 6, off = 4;
+    double phase = 0;
+    for (qsizetype i = 1; i < poly.size(); ++i) {
+        const QPointF a = poly[i - 1], b = poly[i];
+        const double len = std::hypot(b.x() - a.x(), b.y() - a.y());
+        double t = 0;
+        while (t < len) {
+            const bool drawing = phase < on;
+            const double left = drawing ? on - phase : on + off - phase;
+            const double step = std::min(left, len - t);
+            if (drawing)
+                addSegment(v, a + (b - a) * (t / len), a + (b - a) * ((t + step) / len), halfWidth);
+            t += step;
+            phase += step;
+            if (phase >= on + off)
+                phase = 0;
+        }
+    }
+}
+
+// One edge: its line and its arrow
+void addEdge(QVector<Vertex> &v, const GraphScene::SceneEdge &e, double width)
+{
+    if (e.poly.size() < 2)
+        return;
+    const bool inherit = e.kind == int(RefKind::Inherit);
+    const double size = inherit ? 12 : 7 + width;
+    addPolyline(v, shortened(e.poly, size * 0.9), width / 2, e.dashed);
+    QPointF d = e.tip - e.tipFrom;
+    const double len = std::hypot(d.x(), d.y());
+    if (len < 1e-6)
+        return;
+    d /= len;
+    const QPointF n(-d.y(), d.x());
+    const QPointF base = e.tip - d * size;
+    const QPointF l = base + n * size * 0.5, r = base - n * size * 0.5;
+    if (inherit) {
+        // Hollow, as UML draws it
+        addSegment(v, e.tip, l, 0.7);
+        addSegment(v, l, r, 0.7);
+        addSegment(v, r, e.tip, 0.7);
+    } else {
+        addTriangle(v, e.tip, l, r);
+    }
+}
+
+QSGGeometryNode *triangles(const QVector<Vertex> &v, const QColor &color)
+{
+    auto *geometry = new QSGGeometry(QSGGeometry::defaultAttributes_Point2D(), int(v.size()));
+    geometry->setDrawingMode(QSGGeometry::DrawTriangles);
+    std::copy(v.cbegin(), v.cend(), geometry->vertexDataAsPoint2D());
+    auto *material = new QSGFlatColorMaterial;
+    material->setColor(color);
+    auto *node = new QSGGeometryNode;
+    node->setGeometry(geometry);
+    node->setMaterial(material);
+    node->setFlags(QSGNode::OwnsGeometry | QSGNode::OwnsMaterial);
+    return node;
+}
+
+double edgeWidth(int count)
+{
+    return std::clamp(1.1 + std::log2(double(std::max(1, count))) * 0.6, 1.1, 5.0);
+}
+
+} // namespace
+
+EdgeLayer::EdgeLayer(QQuickItem *parent)
+    : QQuickItem(parent)
+{
+    setFlag(ItemHasContents, true);
+}
+
+void EdgeLayer::rebuildAll()
+{
+    m_baseDirty = true;
+    m_overlayDirty = true;
+    update();
 }
 
 void EdgeLayer::setScene(GraphScene *s)
@@ -89,11 +206,15 @@ void EdgeLayer::setScene(GraphScene *s)
         disconnect(m_scene, nullptr, this, nullptr);
     m_scene = s;
     if (m_scene) {
-        connect(m_scene, &GraphScene::changed, this, [this] { update(); });
-        connect(m_scene, &GraphScene::highlightChanged, this, [this] { update(); });
+        connect(m_scene, &GraphScene::changed, this, &EdgeLayer::rebuildAll);
+        connect(m_scene, &GraphScene::pathsChanged, this, &EdgeLayer::rebuildAll);
+        connect(m_scene, &GraphScene::highlightChanged, this, [this] {
+            m_overlayDirty = true;
+            update();
+        });
     }
     emit sceneChanged();
-    update();
+    rebuildAll();
 }
 
 void EdgeLayer::setZoom(qreal z)
@@ -101,6 +222,10 @@ void EdgeLayer::setZoom(qreal z)
     if (qFuzzyCompare(z, m_zoom))
         return;
     m_zoom = z;
+    // Thin lines are widened to a pixel at the zoom they were made for:
+    // made again only when the zoom has moved far from it
+    if (std::max(z / m_builtZoom, m_builtZoom / z) > 1.6)
+        rebuildAll();
     emit viewChanged();
     update();
 }
@@ -127,7 +252,7 @@ void EdgeLayer::setColors(const QVariantMap &c)
 {
     m_colors = c;
     emit viewChanged();
-    update();
+    rebuildAll();
 }
 
 void EdgeLayer::setHoveredEdge(int e)
@@ -135,6 +260,7 @@ void EdgeLayer::setHoveredEdge(int e)
     if (e == m_hoveredEdge)
         return;
     m_hoveredEdge = e;
+    m_overlayDirty = true;
     emit viewChanged();
     update();
 }
@@ -146,47 +272,84 @@ QColor EdgeLayer::colorFor(int kind, bool cyclic) const
     return colorOf(m_colors, kindKey(kind));
 }
 
-void EdgeLayer::paint(QPainter *painter)
+QSGNode *EdgeLayer::updatePaintNode(QSGNode *old, UpdatePaintNodeData *)
 {
+    auto *root = static_cast<QSGTransformNode *>(old);
+    if (!root) {
+        root = new QSGTransformNode;
+        m_base = new QSGNode;
+        m_overlay = new QSGNode;
+        root->appendChildNode(m_base);
+        root->appendChildNode(m_overlay);
+        m_baseNodes.clear();
+        m_baseDirty = m_overlayDirty = true;
+    }
+    QMatrix4x4 matrix;
+    matrix.translate(float(m_panX), float(m_panY));
+    matrix.scale(float(m_zoom));
+    root->setMatrix(matrix);
     if (!m_scene)
-        return;
-    painter->setRenderHint(QPainter::Antialiasing);
-    painter->translate(m_panX, m_panY);
-    painter->scale(m_zoom, m_zoom);
+        return root;
     const auto &edges = m_scene->edges();
-    const bool focus = m_scene->hasHighlight() || m_hoveredEdge >= 0;
-    const QColor background = colorOf(m_colors, QStringLiteral("background"), Qt::white);
-    // Faint ones first, so the highlighted lie on top
-    for (int pass = 0; pass < 2; ++pass) {
-        for (int i = 0; i < edges.size(); ++i) {
-            const GraphScene::SceneEdge &e = edges[i];
-            if (e.path.isEmpty())
+
+    if (m_baseDirty) {
+        m_baseDirty = false;
+        m_builtZoom = m_zoom;
+        m_base->removeAllChildNodes();
+        for (auto &[node, color] : m_baseNodes)
+            delete node;
+        m_baseNodes.clear();
+        // One buffer per colour
+        const double minWidth = 1.0 / std::max(0.05, m_zoom);
+        QHash<QRgb, QVector<Vertex>> batches;
+        for (const GraphScene::SceneEdge &e : edges) {
+            const QColor c = colorFor(e.kind, e.cyclic);
+            addEdge(batches[c.rgba()], e, std::max(edgeWidth(e.count), minWidth));
+        }
+        for (auto it = batches.cbegin(); it != batches.cend(); ++it) {
+            if (it->isEmpty())
                 continue;
-            const bool strong = !focus || m_scene->edgeHighlighted(i) || i == m_hoveredEdge;
-            if ((pass == 0) == strong)
-                continue;
-            QColor c = colorFor(e.kind, e.cyclic);
-            if (!strong)
-                c = withAlpha(c, 0.13);
-            double width = std::clamp(1.1 + std::log2(double(std::max(1, e.count))) * 0.6, 1.1, 5.0);
-            if (focus && strong)
-                width += 0.8;
-            if (i == m_hoveredEdge)
-                width += 1;
-            QPen pen(c, width);
-            pen.setCapStyle(Qt::RoundCap);
-            if (e.dashed)
-                pen.setStyle(Qt::DashLine);
-            painter->setPen(pen);
-            painter->setBrush(Qt::NoBrush);
-            painter->drawPath(e.path);
-            // Arrow at the target
-            QPen solid(c, 1.2);
-            painter->setPen(solid);
-            const bool inherit = e.kind == int(RefKind::Inherit);
-            arrowHead(painter, e.tip, e.tipFrom, inherit ? 12 : 8 + width, inherit, c, background);
+            const QColor c = QColor::fromRgba(it.key());
+            QSGGeometryNode *node = triangles(*it, c);
+            m_base->appendChildNode(node);
+            m_baseNodes.append({node, c});
+        }
+        m_overlayDirty = true;
+    }
+
+    if (m_overlayDirty) {
+        m_overlayDirty = false;
+        // The rest dimmed while something is highlighted
+        const bool focus = m_scene->hasHighlight() || m_hoveredEdge >= 0;
+        for (auto &[node, color] : m_baseNodes) {
+            auto *material = static_cast<QSGFlatColorMaterial *>(node->material());
+            const QColor want = focus ? withAlpha(color, color.alphaF() * 0.13) : color;
+            if (material->color() != want) {
+                material->setColor(want);
+                node->markDirty(QSGNode::DirtyMaterial);
+            }
+        }
+        while (QSGNode *child = m_overlay->firstChild()) {
+            m_overlay->removeChildNode(child);
+            delete child;
+        }
+        if (focus) {
+            const double minWidth = 1.0 / std::max(0.05, m_zoom);
+            QHash<QRgb, QVector<Vertex>> batches;
+            for (int i = 0; i < edges.size(); ++i) {
+                if (!(m_scene->edgeHighlighted(i) || i == m_hoveredEdge))
+                    continue;
+                const GraphScene::SceneEdge &e = edges[i];
+                const double width = std::max(edgeWidth(e.count), minWidth) + 0.8 + (i == m_hoveredEdge ? 1 : 0);
+                addEdge(batches[colorFor(e.kind, e.cyclic).rgba()], e, width);
+            }
+            for (auto it = batches.cbegin(); it != batches.cend(); ++it) {
+                if (!it->isEmpty())
+                    m_overlay->appendChildNode(triangles(*it, QColor::fromRgba(it.key())));
+            }
         }
     }
+    return root;
 }
 
 int EdgeLayer::edgeAt(qreal x, qreal y) const
@@ -198,12 +361,10 @@ int EdgeLayer::edgeAt(qreal x, qreal y) const
     const auto &edges = m_scene->edges();
     for (int i = int(edges.size()) - 1; i >= 0; --i) {
         const GraphScene::SceneEdge &e = edges[i];
-        if (e.path.isEmpty() || !e.hitBounds.adjusted(-tol, -tol, tol, tol).contains(p))
+        if (e.poly.size() < 2 || !e.hitBounds.adjusted(-tol, -tol, tol, tol).contains(p))
             continue;
-        // Distance to the flattened curve: no stroke to build per move
-        const QPolygonF poly = e.path.toSubpathPolygons().value(0);
-        for (qsizetype k = 0; k + 1 < poly.size(); ++k) {
-            const QPointF a = poly[k], b = poly[k + 1];
+        for (qsizetype k = 0; k + 1 < e.poly.size(); ++k) {
+            const QPointF a = e.poly[k], b = e.poly[k + 1];
             const QPointF ab = b - a;
             const double len2 = QPointF::dotProduct(ab, ab);
             const double t = len2 > 0 ? std::clamp(QPointF::dotProduct(p - a, ab) / len2, 0.0, 1.0) : 0.0;
@@ -218,12 +379,18 @@ int EdgeLayer::edgeAt(qreal x, qreal y) const
 // --- BundleView ------------------------------------------------------------------------
 
 BundleView::BundleView(QQuickItem *parent)
-    : QQuickPaintedItem(parent)
+    : QQuickItem(parent)
 {
-    setAntialiasing(true);
+    setFlag(ItemHasContents, true);
     setAcceptHoverEvents(false);
     // A hidden view (another tab) waits until it is shown
     connect(Session::instance(), &Session::modelChanged, this, [this] {
+        if (isVisible())
+            rebuild();
+        else
+            m_dirty = true;
+    });
+    connect(Session::instance(), &Session::foldedChanged, this, [this] {
         if (isVisible())
             rebuild();
         else
@@ -316,7 +483,7 @@ void BundleView::setZoom(qreal z)
 
 void BundleView::geometryChange(const QRectF &n, const QRectF &o)
 {
-    QQuickPaintedItem::geometryChange(n, o);
+    QQuickItem::geometryChange(n, o);
     m_cacheValid = false;
     m_pathsValid = false;
 }
@@ -385,8 +552,34 @@ void BundleView::rebuild()
     }
     std::sort(files.begin(), files.end(), [&](qint32 a, qint32 b) { return m.files[a].relative < m.files[b].relative; });
     QHash<qint32, int> leafOfSymbol, leafOfFile;
+    const QStringList folded = Session::instance()->foldedFolders();
+    QHash<QString, int> foldLeaf;
     for (qint32 f : std::as_const(files)) {
         const File &file = m.files[f];
+        // A folded folder: one leaf for all that is in it
+        const QString fold = Analysis::foldedFolderOf(file.module, folded);
+        if (!fold.isEmpty()) {
+            auto it = foldLeaf.find(fold);
+            if (it == foldLeaf.end()) {
+                const qsizetype slash = fold.lastIndexOf(QLatin1Char('/'));
+                const int dir = folder(slash < 0 ? QString() : fold.left(slash));
+                HNode h;
+                h.name = (slash < 0 ? fold : fold.mid(slash + 1)) + QStringLiteral("/");
+                h.parent = dir;
+                h.depth = m_nodes[dir].depth + 1;
+                h.folder = fold;
+                h.leaf = int(m_leaves.size());
+                m_nodes.append(h);
+                const int id = int(m_nodes.size() - 1);
+                m_nodes[dir].children.append(id);
+                m_leaves.append(id);
+                it = foldLeaf.insert(fold, h.leaf);
+            }
+            leafOfFile.insert(f, *it);
+            for (qint32 s : file.symbols)
+                leafOfSymbol.insert(m.nodeOwner(s), *it);
+            continue;
+        }
         QVector<qint32> syms;
         for (qint32 s : file.symbols) {
             const Symbol &sym = m.symbols[s];
@@ -577,17 +770,8 @@ QPointF BundleView::nodePoint(int node) const
     return c + QPointF(std::cos(h.angle) * r, std::sin(h.angle) * r);
 }
 
-void BundleView::paint(QPainter *painter)
+void BundleView::ensurePaths()
 {
-    if (!m_model || m_leaves.isEmpty())
-        return;
-    const double dpr = window() ? window()->effectiveDevicePixelRatio() : 1.0;
-    const QColor text = colorOf(m_colors, QStringLiteral("text"), Qt::black);
-    const QColor muted = colorOf(m_colors, QStringLiteral("textMuted"), Qt::gray);
-    const QColor source = colorOf(m_colors, QStringLiteral("source"), QColor(60, 170, 90));
-    const QColor target = colorOf(m_colors, QStringLiteral("target"), QColor(220, 70, 60));
-    const QColor accent = colorOf(m_colors, QStringLiteral("accent"), QColor(40, 110, 220));
-
     // The curves, made again only when the geometry or the bundling changes
     if (!m_pathsValid || m_paths.size() != m_links.size()) {
         if (m_chains.size() != m_links.size()) {
@@ -646,116 +830,159 @@ void BundleView::paint(QPainter *painter)
         }
         m_pathsValid = true;
     }
+}
+
+QSGNode *BundleView::updatePaintNode(QSGNode *old, UpdatePaintNodeData *)
+{
+    QSGNode *root = old;
+    if (!root) {
+        root = new QSGNode;
+        m_sgFade = new QSGOpacityNode;
+        m_sgOverlay = new QSGNode;
+        root->appendChildNode(m_sgFade);
+        root->appendChildNode(m_sgOverlay);
+        m_cacheValid = false;
+    }
+    auto clearNode = [](QSGNode *n) {
+        while (QSGNode *c = n->firstChild()) {
+            n->removeChildNode(c);
+            delete c;
+        }
+    };
+    if (!m_model || m_leaves.isEmpty()) {
+        clearNode(m_sgFade);
+        clearNode(m_sgOverlay);
+        return root;
+    }
+    const QColor text = colorOf(m_colors, QStringLiteral("text"), Qt::black);
+    const QColor muted = colorOf(m_colors, QStringLiteral("textMuted"), Qt::gray);
+    const QColor source = colorOf(m_colors, QStringLiteral("source"), QColor(60, 170, 90));
+    const QColor target = colorOf(m_colors, QStringLiteral("target"), QColor(220, 70, 60));
+    const QColor accent = colorOf(m_colors, QStringLiteral("accent"), QColor(40, 110, 220));
+    ensurePaths();
     int maxCount = 1;
     for (const BLink &l : std::as_const(m_links))
         maxCount = std::max(maxCount, l.count);
-    auto drawLink = [&](QPainter *p, int li, double alphaScale, bool emphasis) {
+    // A link: its curve flattened, coloured from the user to the used
+    auto addLink = [&](Sg::Mesh &mesh, int li, double alphaScale, bool emphasis) {
         const BLink &l = m_links[li];
-        const QPainterPath &path = m_paths[li];
-        if (path.isEmpty())
+        const QPolygonF poly = m_paths[li].toSubpathPolygons().value(0);
+        if (poly.size() < 2)
             return;
-        const double w = 0.8 + 2.2 * std::log2(1.0 + l.count) / std::log2(1.0 + maxCount);
+        const double w = 0.8 + 2.2 * std::log2(1.0 + l.count) / std::log2(1.0 + maxCount) + (emphasis ? 0.8 : 0);
         const double alpha = std::clamp((0.22 + 0.5 * double(l.count) / maxCount) * alphaScale, 0.04, 1.0);
-        QPen pen;
-        pen.setWidthF(emphasis ? w + 0.8 : w);
-        if (m_colorByKind) {
-            pen.setColor(withAlpha(colorOf(m_colors, kindKey(l.kind)), alpha));
-        } else {
-            QLinearGradient g(m_ends[li].first, m_ends[li].second);
-            g.setColorAt(0, withAlpha(source, alpha));
-            g.setColorAt(1, withAlpha(target, alpha));
-            pen.setBrush(g);
+        const QColor kind = withAlpha(colorOf(m_colors, kindKey(l.kind)), alpha);
+        const QColor from = withAlpha(source, alpha), to = withAlpha(target, alpha);
+        for (qsizetype i = 1; i < poly.size(); ++i) {
+            if (m_colorByKind) {
+                mesh.segment(poly[i - 1], poly[i], w / 2, kind);
+            } else {
+                const double t0 = double(i - 1) / (poly.size() - 1), t1 = double(i) / (poly.size() - 1);
+                mesh.segment(poly[i - 1], poly[i], w / 2, mix(from, to, t0), mix(from, to, t1));
+            }
         }
-        p->setPen(pen);
-        p->setBrush(Qt::NoBrush);
-        p->drawPath(path);
     };
-
-    if (!m_cacheValid || m_cache.size() != (size() * dpr).toSize()) {
-        m_cache = QImage((size() * dpr).toSize(), QImage::Format_ARGB32_Premultiplied);
-        m_cache.setDevicePixelRatio(dpr);
-        m_cache.fill(Qt::transparent);
-        QPainter cp(&m_cache);
-        cp.setRenderHint(QPainter::Antialiasing);
-        for (int li = 0; li < m_links.size(); ++li)
-            drawLink(&cp, li, 1.0, false);
-        m_cacheValid = true;
-    }
-    painter->setRenderHint(QPainter::Antialiasing);
-    painter->setOpacity(m_hovered >= 0 ? 0.18 : 1.0);
-    painter->drawImage(QPointF(0, 0), m_cache);
-    painter->setOpacity(1.0);
-    if (m_hovered >= 0) {
-        for (int li : m_leafLinks[m_hovered])
-            drawLink(painter, li, 4.0, true);
-    }
-
-    // Arcs for the folders and files, labels for the leaves
     const double size = std::min(width(), height()) * m_zoom;
     const double R = size / 2 - std::max(90.0, size * 0.16);
     const QPointF c(width() / 2, height() / 2);
-    QFont font = QGuiApplication::font();
     const int n = int(m_leaves.size());
     const double perLeaf = 2 * M_PI * R / std::max(1, n);
-    font.setPixelSize(int(std::clamp(perLeaf * 0.8, 6.0, 12.0)));
-    painter->setFont(font);
     const bool labels = perLeaf >= 5.5;
+    QFont font = QGuiApplication::font();
+    font.setPixelSize(int(std::clamp(perLeaf * 0.8, 6.0, 12.0)));
+    // A label beside a leaf, turned along its radius
+    auto addLabel = [&](QSGNode *parent, int li, const QColor &color, bool bold) {
+        const HNode &h = m_nodes[m_leaves[li]];
+        auto *turn = new QSGTransformNode;
+        QMatrix4x4 m;
+        m.translate(float(c.x()), float(c.y()));
+        m.rotate(float(qRadiansToDegrees(h.angle)), 0, 0, 1);
+        const bool flip = std::cos(h.angle) < 0;
+        if (flip)
+            m.rotate(180, 0, 0, 1);
+        turn->setMatrix(m);
+        QFont f = font;
+        f.setBold(bold);
+        QSGTextNode *label = Sg::textNode(window(), color);
+        Sg::addText(label, h.name, f, flip ? QRectF(-R - 6 - 200, -8, 200, 16) : QRectF(R + 6, -8, 200, 16),
+                    (flip ? Qt::AlignRight : Qt::AlignLeft) | Qt::AlignVCenter);
+        turn->appendChildNode(label);
+        parent->appendChildNode(turn);
+    };
+
+    // Everything once, made again when the layout or the colours change
+    if (!m_cacheValid) {
+        m_cacheValid = true;
+        clearNode(m_sgFade);
+        Sg::Mesh links;
+        for (int li = 0; li < m_links.size(); ++li)
+            addLink(links, li, 1.0, false);
+        if (QSGNode *node = links.node())
+            m_sgFade->appendChildNode(node);
+        // Arcs for the top folders outside, the files just inside
+        Sg::Mesh arcs;
+        std::function<void(int)> arc = [&](int node) {
+            const HNode &h = m_nodes[node];
+            if (node > 0 && h.leaf < 0 && h.depth <= 2) {
+                const double radius = h.file >= 0 ? R - 6 : R - 6 - (3 - h.depth) * 5;
+                const QColor col = withAlpha(h.file >= 0 ? muted : text, h.file >= 0 ? 0.35 : 0.55);
+                const double pad = 0.6 * 2 * M_PI / std::max(1, n);
+                const double a0 = h.angleFrom - pad, a1 = h.angleTo + pad;
+                const int steps = std::max(2, int((a1 - a0) * radius / 4));
+                QPointF prev = c + QPointF(std::cos(a0), std::sin(a0)) * radius;
+                for (int k = 1; k <= steps; ++k) {
+                    const double t = a0 + (a1 - a0) * k / steps;
+                    const QPointF p = c + QPointF(std::cos(t), std::sin(t)) * radius;
+                    arcs.segment(prev, p, h.file >= 0 ? 1.0 : 1.5, col);
+                    prev = p;
+                }
+            }
+            for (int ch : h.children)
+                arc(ch);
+        };
+        arc(0);
+        if (QSGNode *node = arcs.node())
+            m_sgFade->appendChildNode(node);
+        if (labels) {
+            for (int li = 0; li < n; ++li)
+                addLabel(m_sgFade, li, muted, false);
+        }
+        // Top folder names along the outside
+        QFont big = QGuiApplication::font();
+        big.setPixelSize(12);
+        big.setBold(true);
+        QSGTextNode *tops = Sg::textNode(window(), text);
+        for (int ch : m_nodes[0].children) {
+            const HNode &h = m_nodes[ch];
+            const double mid = (h.angleFrom + h.angleTo) / 2;
+            const double rr = R + (labels ? 150 : 24);
+            QPointF p = c + QPointF(std::cos(mid) * rr, std::sin(mid) * rr);
+            p.setX(std::clamp(p.x(), 84.0, width() - 84));
+            p.setY(std::clamp(p.y(), 12.0, height() - 12));
+            Sg::addText(tops, h.name.isEmpty() ? QStringLiteral("(root)") : h.name, big, QRectF(p.x() - 80, p.y() - 9, 160, 18),
+                        Qt::AlignCenter);
+        }
+        m_sgFade->appendChildNode(tops);
+    }
+
+    // The hovered leaf's links and labels over the rest, faded
+    m_sgFade->setOpacity(m_hovered >= 0 ? 0.18 : 1.0);
+    clearNode(m_sgOverlay);
+    if (m_hovered >= 0) {
+        Sg::Mesh hot;
+        for (int li : m_leafLinks[m_hovered])
+            addLink(hot, li, 4.0, true);
+        if (QSGNode *node = hot.node())
+            m_sgOverlay->appendChildNode(node);
+        for (int li : std::as_const(m_hoverLinked))
+            addLabel(m_sgOverlay, li, text, false);
+    }
     for (int li = 0; li < n; ++li) {
         const HNode &h = m_nodes[m_leaves[li]];
-        const bool hot = li == m_hovered || h.symbol == m_activeSymbol;
-        const bool linked = !hot && m_hoverLinked.contains(li);
-        if (!labels && !hot && !linked)
-            continue;
-        painter->save();
-        painter->translate(c);
-        painter->rotate(qRadiansToDegrees(h.angle));
-        const bool flip = std::cos(h.angle) < 0;
-        painter->setPen(hot ? accent : linked ? text : muted);
-        QFont f = font;
-        f.setBold(hot);
-        painter->setFont(f);
-        const QString label = h.name;
-        if (flip) {
-            painter->rotate(180);
-            painter->drawText(QRectF(-R - 6 - 200, -8, 200, 16), Qt::AlignRight | Qt::AlignVCenter, label);
-        } else {
-            painter->drawText(QRectF(R + 6, -8, 200, 16), Qt::AlignLeft | Qt::AlignVCenter, label);
-        }
-        painter->restore();
+        if (li == m_hovered || (h.symbol >= 0 && h.symbol == m_activeSymbol))
+            addLabel(m_sgOverlay, li, accent, true);
     }
-    // Group arcs: top folders outside, files just inside
-    std::function<void(int)> arcs = [&](int node) {
-        const HNode &h = m_nodes[node];
-        if (node > 0 && h.leaf < 0 && h.depth <= 2) {
-            const double radius = h.file >= 0 ? R - 6 : R - 6 - (3 - h.depth) * 5;
-            QPen pen(withAlpha(h.file >= 0 ? muted : text, h.file >= 0 ? 0.35 : 0.55), h.file >= 0 ? 2 : 3);
-            painter->setPen(pen);
-            const double pad = 0.6 * 2 * M_PI / std::max(1, n);
-            const double a0 = qRadiansToDegrees(h.angleFrom - pad), a1 = qRadiansToDegrees(h.angleTo + pad);
-            painter->drawArc(QRectF(c.x() - radius, c.y() - radius, 2 * radius, 2 * radius), int(-a0 * 16),
-                             int(-(a1 - a0) * 16));
-        }
-        for (int ch : h.children)
-            arcs(ch);
-    };
-    arcs(0);
-    // Top folder names along the outside
-    QFont big = QGuiApplication::font();
-    big.setPixelSize(12);
-    big.setBold(true);
-    painter->setFont(big);
-    for (int ch : m_nodes[0].children) {
-        const HNode &h = m_nodes[ch];
-        const double mid = (h.angleFrom + h.angleTo) / 2;
-        const double rr = R + (labels ? 150 : 24);
-        QPointF p = c + QPointF(std::cos(mid) * rr, std::sin(mid) * rr);
-        p.setX(std::clamp(p.x(), 84.0, width() - 84));
-        p.setY(std::clamp(p.y(), 12.0, height() - 12));
-        painter->setPen(text);
-        const QString name = h.name.isEmpty() ? QStringLiteral("(root)") : h.name;
-        const QRectF br(p.x() - 80, p.y() - 9, 160, 18);
-        painter->drawText(br, Qt::AlignCenter, name);
-    }
+    return root;
 }
 
 int BundleView::leafAt(qreal x, qreal y) const
@@ -821,8 +1048,10 @@ QVariantMap BundleView::hoveredInfo() const
         else
             in += m_links[li].count;
     }
-    out[QStringLiteral("name")] = h.symbol >= 0 ? m_model->displayName(h.symbol) : m_model->files[h.file].relative;
-    out[QStringLiteral("kind")] = h.symbol >= 0 ? kindName(m_model->symbols[h.symbol].kind) : QStringLiteral("file");
+    out[QStringLiteral("name")] = !h.folder.isEmpty() ? h.folder
+                                : h.symbol >= 0 ? m_model->displayName(h.symbol) : m_model->files[h.file].relative;
+    out[QStringLiteral("kind")] = !h.folder.isEmpty() ? tr("folded folder: click to unfold")
+                                : h.symbol >= 0 ? kindName(m_model->symbols[h.symbol].kind) : QStringLiteral("file");
     out[QStringLiteral("file")] = h.file >= 0 ? m_model->files[h.file].relative : QString();
     out[QStringLiteral("incoming")] = in;
     out[QStringLiteral("outgoing")] = outc;
@@ -839,17 +1068,25 @@ QVariantMap BundleView::itemAt(qreal x, qreal y) const
     const HNode &h = m_nodes[m_leaves[leaf]];
     out[QStringLiteral("symbol")] = h.symbol;
     out[QStringLiteral("file")] = h.file;
+    if (!h.folder.isEmpty())
+        out[QStringLiteral("folder")] = h.folder;
     return out;
 }
 
 // --- TreemapView ----------------------------------------------------------------------
 
 TreemapView::TreemapView(QQuickItem *parent)
-    : QQuickPaintedItem(parent)
+    : QQuickItem(parent)
 {
-    setAntialiasing(false);
+    setFlag(ItemHasContents, true);
     // A hidden view (another tab) waits until it is shown
     connect(Session::instance(), &Session::modelChanged, this, [this] {
+        if (isVisible())
+            rebuild();
+        else
+            m_dirty = true;
+    });
+    connect(Session::instance(), &Session::foldedChanged, this, [this] {
         if (isVisible())
             rebuild();
         else
@@ -913,7 +1150,7 @@ void TreemapView::setActiveSymbol(int s)
 
 void TreemapView::geometryChange(const QRectF &n, const QRectF &o)
 {
-    QQuickPaintedItem::geometryChange(n, o);
+    QQuickItem::geometryChange(n, o);
     if (m_root >= 0 && n.size() != o.size()) {
         m_imageValid = false;
         layoutNode(m_root, QRectF(QPointF(0, 0), n.size()), 0);
@@ -1166,85 +1403,91 @@ QColor TreemapView::colorFor(const TNode &n) const
     return t < 0.5 ? mix(low, midc, t * 2) : mix(midc, high, (t - 0.5) * 2);
 }
 
-void TreemapView::paint(QPainter *painter)
+QSGNode *TreemapView::updatePaintNode(QSGNode *old, UpdatePaintNodeData *)
 {
-    if (m_root < 0)
-        return;
+    QSGNode *root = old;
+    if (!root) {
+        root = new QSGNode;
+        m_sgBase = new QSGNode;
+        m_sgOverlay = new QSGNode;
+        root->appendChildNode(m_sgBase);
+        root->appendChildNode(m_sgOverlay);
+        m_imageValid = false;
+    }
+    if (m_root < 0) {
+        m_sgBase->removeAllChildNodes();
+        m_sgOverlay->removeAllChildNodes();
+        return root;
+    }
     const QColor text = colorOf(m_colors, QStringLiteral("text"), Qt::black);
     const QColor muted = colorOf(m_colors, QStringLiteral("textMuted"), Qt::gray);
     const QColor frame = colorOf(m_colors, QStringLiteral("frame"), QColor(200, 200, 200));
     const QColor bg = colorOf(m_colors, QStringLiteral("background"), Qt::white);
     const QColor accent = colorOf(m_colors, QStringLiteral("accent"), QColor(40, 110, 220));
-    QFont font = QGuiApplication::font();
-    font.setPixelSize(11);
-    QFont bold = font;
-    bold.setBold(true);
-    const QFontMetricsF fm(font);
-    std::function<void(int, int)> draw = [&](int n, int depth) {
-        const TNode &t = m_tree[n];
-        const QRectF r = t.rect;
-        if (r.width() < 1 || r.height() < 1)
-            return;
-        if (t.kind == -3 || t.kind == -2) {
-            if (n != m_root) {
-                painter->setPen(QPen(withAlpha(frame, t.kind == -3 ? 1.0 : 0.7), 1));
-                painter->setBrush(t.kind == -3 ? withAlpha(frame, 0.18) : withAlpha(bg, 0.6));
-                painter->drawRect(r.adjusted(0.5, 0.5, -0.5, -0.5));
-            }
-            if (r.width() > 50 && r.height() > 30) {
-                painter->setFont(t.kind == -3 ? bold : font);
-                painter->setPen(t.kind == -3 ? text : muted);
-                painter->drawText(QRectF(r.left() + 4, r.top() + 1, r.width() - 8, 14), Qt::AlignLeft | Qt::AlignVCenter,
-                                  fm.elidedText(t.name, Qt::ElideMiddle, r.width() - 8));
-            }
-            for (int c : t.children)
-                draw(c, depth + 1);
-            return;
+    auto clearNode = [](QSGNode *n) {
+        while (QSGNode *c = n->firstChild()) {
+            n->removeChildNode(c);
+            delete c;
         }
-        // A class or function: shaded like a cushion
-        const QColor c = colorFor(t);
-        QLinearGradient g(r.topLeft(), r.bottomRight());
-        g.setColorAt(0, c.lighter(118));
-        g.setColorAt(1, c.darker(112));
-        painter->setPen(QPen(withAlpha(bg, 0.9), 1));
-        painter->setBrush(g);
-        painter->drawRect(r);
-        if (r.width() > 36 && r.height() > 14) {
-            painter->setFont(font);
-            painter->setPen(c.lightnessF() > 0.55 ? QColor(20, 20, 20) : QColor(245, 245, 245));
-            painter->drawText(r.adjusted(3, 1, -3, -1), Qt::AlignLeft | Qt::AlignTop,
-                              fm.elidedText(t.name, Qt::ElideRight, r.width() - 6));
-        }
-        for (int ch : t.children)
-            draw(ch, depth + 1);
     };
-    // The map itself once; hover and the active symbol drawn over it
-    const double dpr = window() ? window()->effectiveDevicePixelRatio() : 1.0;
-    const QSize px = (size() * dpr).toSize();
-    if (!m_imageValid || m_image.size() != px) {
-        m_image = QImage(px, QImage::Format_ARGB32_Premultiplied);
-        m_image.setDevicePixelRatio(dpr);
-        m_image.fill(Qt::transparent);
-        QPainter ip(&m_image);
-        QPainter *onScreen = painter;
-        painter = &ip;
-        draw(m_root, 0);
-        painter = onScreen;
+
+    // The map: made again when the layout, the data or the colours change
+    if (!m_imageValid) {
         m_imageValid = true;
+        clearNode(m_sgBase);
+        QFont font = QGuiApplication::font();
+        font.setPixelSize(11);
+        QFont bold = font;
+        bold.setBold(true);
+        Sg::Mesh mesh;
+        QSGTextNode *headers = Sg::textNode(window(), text);
+        QSGTextNode *files = Sg::textNode(window(), muted);
+        QSGTextNode *dark = Sg::textNode(window(), QColor(20, 20, 20));
+        QSGTextNode *light = Sg::textNode(window(), QColor(245, 245, 245));
+        std::function<void(int)> draw = [&](int n) {
+            const TNode &t = m_tree[n];
+            const QRectF r = t.rect;
+            if (r.width() < 1 || r.height() < 1)
+                return;
+            if (t.kind == -3 || t.kind == -2) {
+                if (n != m_root) {
+                    mesh.rect(r.adjusted(1, 1, -1, -1), t.kind == -3 ? withAlpha(frame, 0.18) : withAlpha(bg, 0.6));
+                    mesh.frame(r, 1, withAlpha(frame, t.kind == -3 ? 1.0 : 0.7));
+                }
+                if (r.width() > 50 && r.height() > 30)
+                    Sg::addText(t.kind == -3 ? headers : files, t.name, t.kind == -3 ? bold : font,
+                                QRectF(r.left() + 4, r.top() + 1, r.width() - 8, 14));
+                for (int c : t.children)
+                    draw(c);
+                return;
+            }
+            // A class or function: shaded like a cushion, a gap around it
+            const QColor c = colorFor(t);
+            mesh.gradient(r.adjusted(0.5, 0.5, -0.5, -0.5), c.lighter(118), c.darker(112));
+            if (r.width() > 36 && r.height() > 14)
+                Sg::addText(c.lightnessF() > 0.55 ? dark : light, t.name, font, QRectF(r.left() + 3, r.top() + 1, r.width() - 6, 14));
+            for (int ch : t.children)
+                draw(ch);
+        };
+        draw(m_root);
+        if (QSGNode *node = mesh.node())
+            m_sgBase->appendChildNode(node);
+        for (QSGTextNode *tn : {headers, files, dark, light})
+            m_sgBase->appendChildNode(tn);
     }
-    painter->drawImage(QPointF(0, 0), m_image);
-    auto outline = [&](int n, const QColor &col, double w) {
-        if (n < 0)
-            return;
-        painter->setBrush(Qt::NoBrush);
-        painter->setPen(QPen(col, w));
-        painter->drawRect(m_tree[n].rect.adjusted(w / 2, w / 2, -w / 2, -w / 2));
-    };
+
+    // The hovered and the active node outlined over it
+    clearNode(m_sgOverlay);
+    Sg::Mesh outlines;
     for (int i = 0; i < m_tree.size(); ++i) {
         if (m_tree[i].symbol >= 0 && m_tree[i].symbol == m_activeSymbol)
-            outline(i, accent, 3);
+            outlines.frame(m_tree[i].rect, 3, accent);
     }
-    outline(m_hoveredNode, text, 2);
+    if (m_hoveredNode >= 0)
+        outlines.frame(m_tree[m_hoveredNode].rect, 2, text);
+    if (QSGNode *node = outlines.node())
+        m_sgOverlay->appendChildNode(node);
+    return root;
 }
 
 int TreemapView::nodeAt(qreal x, qreal y) const
@@ -1311,11 +1554,17 @@ QVariantMap TreemapView::itemAt(qreal x, qreal y) const
 // --- MatrixView ------------------------------------------------------------------------
 
 MatrixView::MatrixView(QQuickItem *parent)
-    : QQuickPaintedItem(parent)
+    : QQuickItem(parent)
 {
-    setAntialiasing(false);
+    setFlag(ItemHasContents, true);
     // A hidden view (another tab) waits until it is shown
     connect(Session::instance(), &Session::modelChanged, this, [this] {
+        if (isVisible())
+            rebuild();
+        else
+            m_dirty = true;
+    });
+    connect(Session::instance(), &Session::foldedChanged, this, [this] {
         if (isVisible())
             rebuild();
         else
@@ -1345,6 +1594,7 @@ void MatrixView::setModuleDepth(int d)
 void MatrixView::setColors(const QVariantMap &c)
 {
     m_colors = c;
+    m_baseValid = false;
     emit optionsChanged();
     update();
 }
@@ -1352,6 +1602,7 @@ void MatrixView::setColors(const QVariantMap &c)
 void MatrixView::rebuild()
 {
     m_model = Session::instance()->model();
+    m_baseValid = false;
     m_order.clear();
     m_position.clear();
     m_selectedLink = -1;
@@ -1362,7 +1613,8 @@ void MatrixView::rebuild()
         update();
         return;
     }
-    m_graph = Analysis::dependencyGraph(*m_model, Analysis::Level(std::clamp(m_level, 0, 2)), m_moduleDepth);
+    m_graph = Analysis::dependencyGraph(*m_model, Analysis::Level(std::clamp(m_level, 0, 2)), m_moduleDepth, false, {},
+                                        Session::instance()->foldedFolders());
     m_order = Analysis::dependencyOrder(m_graph);
     m_position = QVector<int>(m_graph.names.size(), -1);
     for (int i = 0; i < m_order.size(); ++i)
@@ -1377,6 +1629,7 @@ void MatrixView::rebuild()
     for (const QString &n : std::as_const(m_graph.names))
         w = std::max(w, fm.horizontalAdvance(n) + 44);
     m_labelWidth = std::min(w, 340.0);
+    m_baseValid = false;
     resize();
     emit selectionChanged();
 }
@@ -1385,7 +1638,10 @@ void MatrixView::resize()
 {
     // Cells to fit the viewport, but not smaller than 3 px: then it scrolls
     const int n = int(m_order.size());
-    m_cell = n ? std::clamp((std::min(width() - m_labelWidth, height() - 30) - 8) / n, 3.0, 36.0) : 16;
+    const double cell = n ? std::clamp((std::min(width() - m_labelWidth, height() - 30) - 8) / n, 3.0, 36.0) : 16;
+    if (cell != m_cell)
+        m_baseValid = false;
+    m_cell = cell;
     emit rebuilt();
     update();
 }
@@ -1410,7 +1666,7 @@ void MatrixView::setViewY(qreal v)
 
 void MatrixView::geometryChange(const QRectF &n, const QRectF &o)
 {
-    QQuickPaintedItem::geometryChange(n, o);
+    QQuickItem::geometryChange(n, o);
     if (n.size() != o.size())
         resize();
 }
@@ -1424,93 +1680,118 @@ bool MatrixView::cellAt(qreal x, qreal y, int *row, int *col) const
     return *row >= 0 && *row < n && *col >= 0 && *col < n;
 }
 
-void MatrixView::paint(QPainter *painter)
+QSGNode *MatrixView::updatePaintNode(QSGNode *old, UpdatePaintNodeData *)
 {
+    auto *root = static_cast<QSGTransformNode *>(old);
+    if (!root) {
+        root = new QSGTransformNode;
+        m_sgBase = new QSGNode;
+        m_sgOverlay = new QSGNode;
+        root->appendChildNode(m_sgBase);
+        root->appendChildNode(m_sgOverlay);
+        m_baseValid = false;
+    }
+    // Scrolling only moves the whole matrix
+    QMatrix4x4 matrix;
+    matrix.translate(float(-m_viewX), float(-m_viewY));
+    root->setMatrix(matrix);
+    auto clearNode = [](QSGNode *n) {
+        while (QSGNode *c = n->firstChild()) {
+            n->removeChildNode(c);
+            delete c;
+        }
+    };
     const int n = int(m_order.size());
-    if (!n)
-        return;
     const QColor text = colorOf(m_colors, QStringLiteral("text"), Qt::black);
     const QColor muted = colorOf(m_colors, QStringLiteral("textMuted"), Qt::gray);
     const QColor grid = colorOf(m_colors, QStringLiteral("frame"), QColor(220, 220, 220));
     const QColor accent = colorOf(m_colors, QStringLiteral("accent"), QColor(40, 110, 220));
     const QColor cycle = colorOf(m_colors, QStringLiteral("cycle"), QColor(220, 60, 60));
     const QColor hoverBg = colorOf(m_colors, QStringLiteral("hover"), QColor(0, 0, 0, 20));
-    QFont font = QGuiApplication::font();
-    font.setPixelSize(std::clamp(int(m_cell * 0.75), 7, 11));
-    painter->setFont(font);
-    const QFontMetricsF fm(font);
     const double L = m_labelWidth, T = 30, c = m_cell;
-    // Only what shows
-    painter->translate(-m_viewX, -m_viewY);
-    const int from = std::clamp(int(std::min(m_viewX - L, m_viewY - T) / c) - 1, 0, n);
-    const int rowFrom = std::clamp(int((m_viewY - T) / c) - 1, 0, n);
-    const int rowTo = std::clamp(int((m_viewY + height() - T) / c) + 2, 0, n);
-    const int colFrom = std::clamp(int((m_viewX - L) / c) - 1, 0, n);
-    const int colTo = std::clamp(int((m_viewX + width() - L) / c) + 2, 0, n);
-    Q_UNUSED(from)
-    // Hovered row and column
-    if (m_hoverRow >= 0) {
-        painter->fillRect(QRectF(0, T + m_hoverRow * c, L + n * c, c), hoverBg);
-        painter->fillRect(QRectF(L + m_hoverCol * c, T, c, n * c), hoverBg);
-    }
-    // Components on the diagonal
-    for (int i = 0; i < n;) {
-        const int comp = m_graph.component[m_order[i]];
-        int j = i;
-        while (j < n && m_graph.component[m_order[j]] == comp)
-            ++j;
-        if (j - i > 1) {
-            painter->setPen(QPen(cycle, 1.5));
-            painter->setBrush(withAlpha(cycle, 0.08));
-            painter->drawRect(QRectF(L + i * c, T + i * c, (j - i) * c, (j - i) * c));
+
+    if (!m_baseValid) {
+        m_baseValid = true;
+        clearNode(m_sgBase);
+        if (n == 0)
+            return root;
+        Sg::Mesh mesh;
+        // Components on the diagonal
+        for (int i = 0; i < n;) {
+            const int comp = m_graph.component[m_order[i]];
+            int j = i;
+            while (j < n && m_graph.component[m_order[j]] == comp)
+                ++j;
+            if (j - i > 1) {
+                const QRectF box(L + i * c, T + i * c, (j - i) * c, (j - i) * c);
+                mesh.rect(box, withAlpha(cycle, 0.08));
+                mesh.frame(box, 1.5, cycle);
+            }
+            i = j;
         }
-        i = j;
-    }
-    // Grid
-    painter->setPen(QPen(withAlpha(grid, 0.6), 1));
-    if (c >= 6) {
-        for (int i = rowFrom; i <= rowTo; ++i)
-            painter->drawLine(QPointF(L + colFrom * c, T + i * c), QPointF(L + colTo * c, T + i * c));
-        for (int i = colFrom; i <= colTo; ++i)
-            painter->drawLine(QPointF(L + i * c, T + rowFrom * c), QPointF(L + i * c, T + rowTo * c));
-    }
-    // Diagonal
-    for (int i = std::max(rowFrom, colFrom); i < std::min(rowTo, colTo); ++i)
-        painter->fillRect(QRectF(L + i * c + 1, T + i * c + 1, c - 1, c - 1), withAlpha(muted, 0.35));
-    // Cells
-    for (const auto &l : m_graph.links) {
-        const int r = m_position[l.from], col = m_position[l.to];
-        if (r < rowFrom || r >= rowTo || col < colFrom || col >= colTo)
-            continue;
-        const int count = l.count + l.includes;
-        const double t = std::log2(1.0 + count) / std::log2(1.0 + m_maxCount);
-        const QColor base = l.cyclic ? cycle : accent;
-        painter->fillRect(QRectF(L + col * c + 1, T + r * c + 1, c - 1, c - 1), withAlpha(base, 0.2 + 0.8 * t));
-        if (c >= 14) {
-            painter->setPen(t > 0.55 ? QColor(255, 255, 255) : text);
-            painter->drawText(QRectF(L + col * c, T + r * c, c, c), Qt::AlignCenter,
-                              count > 999 ? QStringLiteral("k") : QString::number(count));
+        // Grid and diagonal
+        if (c >= 6) {
+            const QColor line = withAlpha(grid, 0.6);
+            for (int i = 0; i <= n; ++i) {
+                mesh.rect(QRectF(L, T + i * c - 0.5, n * c, 1), line);
+                mesh.rect(QRectF(L + i * c - 0.5, T, 1, n * c), line);
+            }
         }
-    }
-    if (m_selRow >= 0) {
-        painter->setBrush(Qt::NoBrush);
-        painter->setPen(QPen(text, 2));
-        painter->drawRect(QRectF(L + m_selCol * c, T + m_selRow * c, c, c));
-    }
-    // Labels: index and name on the left, index on top
-    for (int i = std::min(rowFrom, colFrom); i < std::max(rowTo, colTo); ++i) {
-        const int node = m_order[i];
-        const bool hot = i == m_hoverRow || i == m_hoverCol;
-        painter->setPen(hot ? accent : (m_graph.componentSize[m_graph.component[node]] > 1 ? cycle : text));
+        for (int i = 0; i < n; ++i)
+            mesh.rect(QRectF(L + i * c + 1, T + i * c + 1, c - 1, c - 1), withAlpha(muted, 0.35));
+        // Cells
+        QFont font = QGuiApplication::font();
+        font.setPixelSize(std::clamp(int(c * 0.75), 7, 11));
+        QSGTextNode *countsDark = Sg::textNode(window(), text);
+        QSGTextNode *countsLight = Sg::textNode(window(), QColor(255, 255, 255));
+        for (const auto &l : m_graph.links) {
+            const int r = m_position[l.from], col = m_position[l.to];
+            if (r < 0 || col < 0)
+                continue;
+            const int count = l.count + l.includes;
+            const double t = std::log2(1.0 + count) / std::log2(1.0 + m_maxCount);
+            mesh.rect(QRectF(L + col * c + 1, T + r * c + 1, c - 1, c - 1), withAlpha(l.cyclic ? cycle : accent, 0.2 + 0.8 * t));
+            if (c >= 14)
+                Sg::addText(t > 0.55 ? countsLight : countsDark, count > 999 ? QStringLiteral("k") : QString::number(count),
+                            font, QRectF(L + col * c, T + r * c, c, c), Qt::AlignCenter, false);
+        }
+        if (QSGNode *node = mesh.node())
+            m_sgBase->appendChildNode(node);
+        m_sgBase->appendChildNode(countsDark);
+        m_sgBase->appendChildNode(countsLight);
+        // Labels: index and name on the left, index on top
         if (c >= 7) {
-            const QString label = QString::number(i + 1) + QStringLiteral("  ") + m_graph.names[node];
-            painter->drawText(QRectF(4, T + i * c, L - 8, c), Qt::AlignRight | Qt::AlignVCenter,
-                              fm.elidedText(label, Qt::ElideMiddle, L - 8));
-            painter->setPen(hot ? accent : muted);
-            painter->drawText(QRectF(L + i * c, 4, c, T - 6), Qt::AlignHCenter | Qt::AlignBottom,
-                              c >= 14 || (i + 1) % 5 == 0 ? QString::number(i + 1) : QString());
+            QSGTextNode *names = Sg::textNode(window(), text);
+            QSGTextNode *cyclic = Sg::textNode(window(), cycle);
+            QSGTextNode *numbers = Sg::textNode(window(), muted);
+            for (int i = 0; i < n; ++i) {
+                const int node = m_order[i];
+                const bool inCycle = m_graph.componentSize[m_graph.component[node]] > 1;
+                Sg::addText(inCycle ? cyclic : names, QString::number(i + 1) + QStringLiteral("  ") + m_graph.names[node], font,
+                            QRectF(4, T + i * c, L - 8, c), Qt::AlignRight | Qt::AlignVCenter);
+                if (c >= 14 || (i + 1) % 5 == 0)
+                    Sg::addText(numbers, QString::number(i + 1), font, QRectF(L + i * c, 4, c, T - 6),
+                                Qt::AlignHCenter | Qt::AlignBottom, false);
+            }
+            m_sgBase->appendChildNode(names);
+            m_sgBase->appendChildNode(cyclic);
+            m_sgBase->appendChildNode(numbers);
         }
     }
+
+    // Hovered row and column, the selected cell
+    clearNode(m_sgOverlay);
+    Sg::Mesh over;
+    if (m_hoverRow >= 0) {
+        over.rect(QRectF(0, T + m_hoverRow * c, L + n * c, c), hoverBg);
+        over.rect(QRectF(L + m_hoverCol * c, T, c, n * c), hoverBg);
+        over.frame(QRectF(L + m_hoverCol * c, T + m_hoverRow * c, c, c), 1, accent);
+    }
+    if (m_selRow >= 0)
+        over.frame(QRectF(L + m_selCol * c, T + m_selRow * c, c, c), 2, text);
+    if (QSGNode *node = over.node())
+        m_sgOverlay->appendChildNode(node);
+    return root;
 }
 
 void MatrixView::hover(qreal x, qreal y)
@@ -1599,7 +1880,9 @@ QVariantMap MatrixView::nodeInfo(qreal x, qreal y) const
     const int node = m_order[r];
     out[QStringLiteral("name")] = m_graph.names[node];
     out[QStringLiteral("level")] = m_level;
-    if (m_level == 1)
+    if (!m_graph.folder[node].isEmpty())
+        out[QStringLiteral("folder")] = m_graph.folder[node];
+    else if (m_level == 1)
         out[QStringLiteral("file")] = m_graph.ids[node];
     else if (m_level == 2)
         out[QStringLiteral("symbol")] = m_graph.ids[node];
@@ -1608,7 +1891,7 @@ QVariantMap MatrixView::nodeInfo(qreal x, qreal y) const
 
 void BundleView::itemChange(ItemChange change, const ItemChangeData &value)
 {
-    QQuickPaintedItem::itemChange(change, value);
+    QQuickItem::itemChange(change, value);
     if (change == ItemVisibleHasChanged && value.boolValue && m_dirty) {
         m_dirty = false;
         rebuild();
@@ -1617,7 +1900,7 @@ void BundleView::itemChange(ItemChange change, const ItemChangeData &value)
 
 void TreemapView::itemChange(ItemChange change, const ItemChangeData &value)
 {
-    QQuickPaintedItem::itemChange(change, value);
+    QQuickItem::itemChange(change, value);
     if (change == ItemVisibleHasChanged && value.boolValue && m_dirty) {
         m_dirty = false;
         rebuild();
@@ -1626,7 +1909,7 @@ void TreemapView::itemChange(ItemChange change, const ItemChangeData &value)
 
 void MatrixView::itemChange(ItemChange change, const ItemChangeData &value)
 {
-    QQuickPaintedItem::itemChange(change, value);
+    QQuickItem::itemChange(change, value);
     if (change == ItemVisibleHasChanged && value.boolValue && m_dirty) {
         m_dirty = false;
         rebuild();

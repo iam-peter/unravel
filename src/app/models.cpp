@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <functional>
 
+#include "changes.h"
 #include "highlight.h"
 #include "session.h"
 
@@ -539,7 +540,7 @@ QHash<int, QByteArray> ProjectTree::roleNames() const
 {
     return {{Qt::DisplayRole, "display"}, {NameRole, "name"}, {KindRole, "kind"}, {SymbolRole, "symbol"},
             {FileRole, "file"}, {DetailRole, "detail"}, {ExternalRole, "external"}, {UnusedRole, "unused"},
-            {IconRole, "iconName"}};
+            {IconRole, "iconName"}, {PathRole, "path"}};
 }
 
 QVariant ProjectTree::data(const QModelIndex &index, int role) const
@@ -557,6 +558,7 @@ QVariant ProjectTree::data(const QModelIndex &index, int role) const
     case ExternalRole: return n.file >= 0 && m_model && m_model->files[n.file].generated;
     case UnusedRole: return n.symbol >= 0 && m_model && Analysis::looksUnused(*m_model, n.symbol);
     case IconRole: return iconFor(n.kind);
+    case PathRole: return n.path;
     }
     return {};
 }
@@ -1272,6 +1274,7 @@ CodeSnippets::CodeSnippets(QObject *parent)
         schedule();
     });
     connect(this, &CodeSnippets::inputChanged, this, &CodeSnippets::schedule);
+    connect(Changes::instance(), &Changes::changesChanged, this, &CodeSnippets::schedule);
 }
 
 void CodeSnippets::setSymbol(int s)
@@ -1486,15 +1489,21 @@ QVariantMap CodeSnippets::snippet(int file, int from, int to, const QString &tit
         return out;
     const QString numberColor = m_colors.value(QStringLiteral("lineNumber")).toString();
     const QString markerColor = m_colors.value(QStringLiteral("marker")).toString();
+    const QString changedColor = m_colors.value(QStringLiteral("changed")).toString();
+    // Lines the selected commits changed get a bar in the gutter
+    const QSet<qint32> *changed = Changes::instance()->changedLines(file);
     const int digits = int(QString::number(to).size());
     QString html;
     html.reserve((to - from + 1) * 120);
     for (int l = from; l <= to; ++l) {
         const bool marked = markLines.contains(l);
+        const bool isChanged = changed && changed->contains(l);
         html += QStringLiteral("<span style=\"color:%1;\">%2</span>")
-                    .arg(marked ? markerColor : numberColor,
+                    .arg(isChanged ? changedColor : marked ? markerColor : numberColor,
                          QString::number(l).rightJustified(digits, QLatin1Char(' ')).replace(QLatin1Char(' '), QStringLiteral("&nbsp;"))
-                             + (marked ? QStringLiteral(" ▸ ") : QStringLiteral("   ")));
+                             + (isChanged ? QStringLiteral("▍") : QStringLiteral(" ")));
+        html += QStringLiteral("<span style=\"color:%1;\">%2</span>")
+                    .arg(markerColor, marked ? QStringLiteral("▸ ") : QStringLiteral("&nbsp; "));
         html += lineHtml(file, l, *t);
         if (l < to)
             html += QStringLiteral("<br>");

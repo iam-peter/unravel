@@ -141,6 +141,13 @@ Item {
         }
     }
 
+    Binding {
+        target: canvas.scene
+        property: "edgeStyle"
+        value: Theme.prefs.edgeStyle
+        when: canvas.scene !== null
+    }
+
     EdgeLayer {
         id: edges
         anchors.fill: parent
@@ -241,6 +248,13 @@ Item {
             }
             IconButton { iconName: "zoom-in"; onClicked: canvas.zoomBy(1.25); ToolTip.visible: hovered; ToolTip.text: qsTr("Zoom in") }
             IconButton { iconName: "maximize"; onClicked: canvas.fit(1.5); ToolTip.visible: hovered; ToolTip.text: qsTr("Fit everything") }
+            IconButton {
+                iconName: Theme.prefs.edgeStyle === 0 ? "spline" : Theme.prefs.edgeStyle === 1 ? "minus" : "route"
+                onClicked: Theme.prefs.edgeStyle = (Theme.prefs.edgeStyle + 1) % 3
+                ToolTip.visible: hovered
+                ToolTip.text: [qsTr("Edges: curved"), qsTr("Edges: straight"), qsTr("Edges: right angles")][Theme.prefs.edgeStyle]
+                              + qsTr(" (click for the next; also in the settings)")
+            }
             IconButton {
                 iconName: "info"
                 checkable: true

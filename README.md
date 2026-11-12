@@ -25,7 +25,8 @@ Qt 6 (C++ and Qt Quick), with the controls, themes and fonts of
 
 All views share one *active symbol*. Clicking anything — a node, a
 member, a name in the code, a row, a finding — makes it the active one
-everywhere; Alt+Left and Alt+Right go back and forth.
+everywhere; Alt+Left and Alt+Right, or the mouse's thumb buttons as in a
+browser, go back and forth.
 
 | View | What it shows |
 |---|---|
@@ -37,12 +38,25 @@ everywhere; Alt+Left and Alt+Right go back and forth.
 | **Treemap** (Ctrl+6) | Folders, files and what is written in them, area by lines (or statements), colour by complexity, callers, uses, nesting, findings or “looks unused”. Double-click to zoom into a folder. |
 | **Metrics** (Ctrl+7) | A table lens of every function, class, file and module: lines, McCabe and cognitive complexity, nesting, parameters, callers, callees; methods, weighted methods, inheritance depth, coupling and cohesion of classes. Bars for each value's share, review thresholds in red. Copies as CSV. |
 | **Review** (Ctrl+8) | What deserves a reviewer's attention, each with why it matters and a link to its code. Exported as a Markdown report for a pull request, a ticket or an assistant. |
+| **Changes** (Ctrl+9) | Only the code that chosen commits changed. Pick commits from the git history (Ctrl adds one, Shift a range), or the uncommitted changes; their changed lines are carried forward to the files as they are now and mapped to the classes, functions, fields and macros they are in. The graph shows those with their changed members (new ones in green, changed in yellow, with the number of lines) and how they use each other — optionally with what uses them, the change's reach, and what they use. Beside it the changed symbols, files and the review's findings in the change, exported as Markdown. Every other view marks the changed members, and the code view the changed lines. |
 
 Beside every view: the active symbol's **details** (signature, where it
 is, its measurements, what the review says about it) and the **code**,
 as in Sourcetrail — the definition first, then every place that uses it
 with the lines around, each under the function it is in. Every name
 clang resolved is a link. Or the whole file.
+
+**Folding.** Any folder can be folded into one node — third-party code, generated code, a subsystem
+you aren't reviewing — and everything that uses something in it then points at that node. Fold from
+the project tree or a node's context menu (right-click), or with *Fold → Fold third-party code*, which
+finds folders such as `3rdparty`, `third_party`, `vendor` or `external`. Folded folders apply to the
+Graph, Architecture, Matrix and Bundles views, are kept per project, and open again with a click on
+their node, from the menu or the tree.
+
+Everything is drawn on the GPU through Qt Quick's scene graph: the edges as one vertex buffer per
+colour, the bundles, treemap and matrix as coloured meshes with scene-graph text, so panning,
+scrolling and zooming only move a transform and hovering redraws only what it highlights. They can be curved, straight or at right angles
+(*Settings*, or the button beside the zoom).
 
 On the left the **project**: folders, files and what they declare, or the
 namespaces; bookmarks (Ctrl+D). **Search** (Ctrl+K) is fuzzy over every
@@ -112,7 +126,10 @@ written three times, a base without a virtual destructor, global state, dead cod
 ./build/bin/unravel-cli path/to/project --save index.idx        # the index, to --load later
 ```
 
-`unravel --grab shot.png --view architecture --symbol ns::Class project` saves a screenshot of a view.
+`unravel --grab shot.png --view architecture --symbol ns::Class project` saves a screenshot of a view;
+`unravel --view changes --commits a1b2c3d,worktree project` opens on the code those commits changed;
+`--fold vendor,src/generated` folds folders on start. `UNRAVEL_PAN_BENCH=1` pans the visible graph and
+prints the time per frame.
 
 ## How it is made
 
@@ -127,6 +144,8 @@ written three times, a base without a virtual destructor, global state, dead cod
     class metrics, call trees and paths, the findings
   - `layout` — a layered (Sugiyama) layout and a squarified treemap
   - `report` — the Markdown review
+  - `history` — the git log and diffs (with the git command line), changed lines carried forward to the
+    work tree and mapped to symbols
 - [src/app](src/app) — what the QML uses: the `Session` (opening, indexing, the active symbol, history,
   bookmarks), list and tree models, the graph scenes, and the painted views (edges, bundles, treemap,
   matrix)

@@ -49,6 +49,7 @@ add_library(unravel_core STATIC
     src/core/analysis.h src/core/analysis.cpp
     src/core/layout.h src/core/layout.cpp
     src/core/report.h src/core/report.cpp
+    src/core/history.h src/core/history.cpp
 )
 target_include_directories(unravel_core PUBLIC src/core)
 target_link_libraries(unravel_core PUBLIC Qt6::Core libclang)
@@ -105,20 +106,25 @@ if(NOT UNRAVEL_CORE_ONLY)
             qml/TreemapPage.qml
             qml/MetricsView.qml
             qml/FindingsView.qml
+            qml/ChangesView.qml
+            qml/FoldMenu.qml
             qml/SettingsDialog.qml
             qml/ErrorsDialog.qml
             qml/ShortcutsDialog.qml
         SOURCES
             src/app/session.h src/app/session.cpp
+            src/app/changes.h src/app/changes.cpp
             src/app/models.h src/app/models.cpp
             src/app/graphscene.h src/app/graphscene.cpp
             src/app/views.h src/app/views.cpp
+            src/app/sgutil.h src/app/sgutil.cpp
             src/app/highlight.h src/app/highlight.cpp
             src/app/gridbackground.h src/app/gridbackground.cpp
             src/app/Fonts.h src/app/Fonts.cpp
         RESOURCES
             ${icon_files}
             logo/unravel.svg
+            images/hatch.svg
             fonts/Inter-Bold.ttf
             fonts/Inter-Italic.ttf
             fonts/Inter-Medium.ttf

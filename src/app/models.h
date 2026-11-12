@@ -82,7 +82,7 @@ class ProjectTree : public QAbstractItemModel
 
 public:
     enum Roles { NameRole = Qt::UserRole + 1, KindRole, SymbolRole, FileRole, DetailRole, ExternalRole,
-                 UnusedRole, IconRole };
+                 UnusedRole, IconRole, PathRole };
     enum Mode { Files, Namespaces };
     Q_ENUM(Mode)
 

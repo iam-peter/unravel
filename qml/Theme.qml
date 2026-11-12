@@ -23,6 +23,7 @@ QtObject {
         property bool showGrid: true
         property bool showLegend: false
         property int snippetContext: 2
+        property int edgeStyle: 0          // GraphScene.EdgeStyle: curved, straight, right angles
     }
     readonly property font uiFont: Qt.font({ family: prefs.uiFamily, pointSize: prefs.uiSize })
     readonly property font monoFont: Qt.font({ family: prefs.codeFamily, pointSize: prefs.codeSize })
@@ -53,6 +54,7 @@ QtObject {
     // SymbolKind (src/core/model.h) to a colour; -2 files, -3 folders
     function kindColor(kind) {
         switch (kind) {
+        case -4: return namespaceColor
         case -3: case -2: return fileColor
         case 1: return namespaceColor
         case 2: case 3: case 4: case 5: case 7: case 16: return typeColor
@@ -64,6 +66,7 @@ QtObject {
     }
     function kindIcon(kind) {
         switch (kind) {
+        case -4: return "package"
         case -3: return "folder"
         case -2: return "file-code"
         case 1: return "braces"
@@ -157,8 +160,14 @@ QtObject {
         mark: hex(Styles.Primitives.alpha(s.warning_default, dark ? 0.38 : 0.32)),
         lineNumber: hex(Styles.Primitives.alpha(s.text_muted, 0.6)),
         marker: hex(s.primary_default),
+        changed: hex(s.warning_default),
+        added: hex(s.success_default),
     })
     readonly property color codeBackground: s.background_secondary
+
+    // Changed and new code (the Changes view, the code view's gutter)
+    readonly property color changed: s.warning_default
+    readonly property color added: s.success_default
 
     function severityColor(sev) {
         return sev >= 2 ? s.danger_default : sev === 1 ? s.warning_default : s.text_muted

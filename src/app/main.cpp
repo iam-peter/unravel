@@ -1,5 +1,8 @@
 #include <QCommandLineParser>
 #include <QDir>
+#include <QMouseEvent>
+#include <QElapsedTimer>
+#include <QQuickItem>
 #include <QGuiApplication>
 #include <QIcon>
 #include <QQmlApplicationEngine>
@@ -7,12 +10,44 @@
 #include <QQuickWindow>
 #include <QSurfaceFormat>
 #include <QTimer>
+
+#include <memory>
 #include <QtQml/qqmlextensionplugin.h>
 
 #include "Fonts.h"
+#include "changes.h"
 #include "session.h"
 
 Q_IMPORT_QML_PLUGIN(IgittStylePlugin)
+
+namespace {
+
+// The mouse's thumb buttons go back and forth through the symbols looked at,
+// as they do through pages in a browser, wherever the pointer is
+class NavigationButtons : public QObject
+{
+public:
+    using QObject::QObject;
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override
+    {
+        if (event->type() == QEvent::MouseButtonPress) {
+            const auto *e = static_cast<QMouseEvent *>(event);
+            if (e->button() == Qt::BackButton) {
+                Session::instance()->back();
+                return true;
+            }
+            if (e->button() == Qt::ForwardButton) {
+                Session::instance()->forward();
+                return true;
+            }
+        }
+        return QObject::eventFilter(watched, event);
+    }
+};
+
+} // namespace
 
 int main(int argc, char *argv[])
 {
@@ -38,7 +73,15 @@ int main(int argc, char *argv[])
                                           QStringLiteral("name"));
     const QCommandLineOption delayOption(QStringLiteral("grab-delay"), QStringLiteral("Milliseconds before grabbing."),
                                          QStringLiteral("ms"), QStringLiteral("2500"));
-    parser.addOptions({grabOption, viewOption, symbolOption, delayOption});
+    const QCommandLineOption commitsOption(QStringLiteral("commits"),
+                                           QStringLiteral("Commits to show in the Changes view: hashes or their beginnings, "
+                                                          "comma-separated; \"worktree\" for what isn't committed."),
+                                           QStringLiteral("hashes"));
+    const QCommandLineOption foldOption(QStringLiteral("fold"),
+                                        QStringLiteral("Folders to show as one node, comma-separated (relative to the project); "
+                                                       "\"vendor\" for the third-party folders found."),
+                                        QStringLiteral("folders"));
+    parser.addOptions({grabOption, viewOption, symbolOption, delayOption, commitsOption, foldOption});
     parser.process(app);
 
     QSurfaceFormat format = QSurfaceFormat::defaultFormat();
@@ -50,6 +93,30 @@ int main(int argc, char *argv[])
     Fonts::registerBundled();
 
     Session *session = Session::instance();
+    if (parser.isSet(foldOption)) {
+        const QStringList folders = parser.value(foldOption).split(QLatin1Char(','), Qt::SkipEmptyParts);
+        auto once = std::make_shared<QMetaObject::Connection>();
+        *once = QObject::connect(session, &Session::modelChanged, session, [session, folders, once] {
+            QObject::disconnect(*once);
+            for (const QString &f : folders) {
+                if (f == QLatin1String("vendor"))
+                    session->foldVendorFolders();
+                else
+                    session->fold(f);
+            }
+        });
+    }
+    Changes *changes = Changes::instance();
+    if (parser.isSet(commitsOption)) {
+        const QStringList revisions = parser.value(commitsOption).split(QLatin1Char(','), Qt::SkipEmptyParts);
+        auto once = std::make_shared<QMetaObject::Connection>();
+        *once = QObject::connect(changes, &Changes::commitsChanged, changes, [changes, revisions, once] {
+            if (changes->commits().size() > 1) {
+                QObject::disconnect(*once);
+                changes->selectRevisions(revisions);
+            }
+        });
+    }
     // UNRAVEL_DEBUG=1: what the session does, on stderr
     if (qEnvironmentVariableIsSet("UNRAVEL_DEBUG")) {
         QObject::connect(session, &Session::stateChanged, session, [session] {
@@ -66,8 +133,54 @@ int main(int argc, char *argv[])
                                  {QStringLiteral("startSymbol"), parser.value(symbolOption)}});
     engine.loadFromModule("Unravel", "Main");
 
+    for (QObject *root : engine.rootObjects()) {
+        if (auto *window = qobject_cast<QQuickWindow *>(root))
+            window->installEventFilter(new NavigationButtons(window));
+    }
+
     if (!parser.positionalArguments().isEmpty())
         session->open(QDir::current().absoluteFilePath(parser.positionalArguments().first()));
+
+    // UNRAVEL_PAN_BENCH=1: once indexed, pan the visible graph for 240 frames
+    // and print the mean time per frame, for measuring the edge rendering
+    if (qEnvironmentVariableIsSet("UNRAVEL_PAN_BENCH")) {
+        QObject::connect(session, &Session::stateChanged, &app, [&engine, session] {
+            if (session->state() != Session::Ready)
+                return;
+            QTimer::singleShot(3000, [&engine] {
+                const auto roots = engine.rootObjects();
+                auto *window = roots.isEmpty() ? nullptr : qobject_cast<QQuickWindow *>(roots.first());
+                if (!window)
+                    return;
+                // The visible edge layer, through the visual tree
+                QQuickItem *layer = nullptr;
+                QList<QQuickItem *> todo = {window->contentItem()};
+                while (!todo.isEmpty() && !layer) {
+                    QQuickItem *item = todo.takeFirst();
+                    if (QByteArray(item->metaObject()->className()) == "EdgeLayer" && item->isVisible())
+                        layer = item;
+                    todo += item->childItems();
+                }
+                if (!layer)
+                    return;
+                auto frames = std::make_shared<int>(0);
+                auto timer = std::make_shared<QElapsedTimer>();
+                const double x0 = layer->property("panX").toDouble();
+                timer->start();
+                QObject::connect(window, &QQuickWindow::frameSwapped, layer, [layer, frames, timer, x0] {
+                    if (*frames == 240) {
+                        fprintf(stderr, "pan: %.2f ms per frame\n", timer->elapsed() / 240.0);
+                        QCoreApplication::exit(0);
+                        return;
+                    }
+                    ++*frames;
+                    layer->setProperty("panX", x0 + *frames * 3);
+                    layer->setProperty("zoom", layer->property("zoom").toDouble() * 1.0005);
+                }, Qt::QueuedConnection);
+                layer->setProperty("panX", x0 + 1);
+            });
+        });
+    }
 
     if (parser.isSet(grabOption)) {
         const QString out = parser.value(grabOption);

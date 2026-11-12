@@ -189,6 +189,24 @@ qint32 CodeModel::enclosingFunction(const Location &loc) const
     return -1;
 }
 
+qint32 CodeModel::innermostAt(qint32 file, qint32 line) const
+{
+    if (file < 0 || file >= m_functionsInFile.size())
+        return -1;
+    const QVector<qint32> &list = m_functionsInFile[file];
+    auto it = std::upper_bound(list.cbegin(), list.cend(), line, [this](qint32 l, qint32 id) {
+        return l < symbols[id].def.line;
+    });
+    int steps = 0;
+    while (it != list.cbegin() && steps++ < 4000) {
+        --it;
+        const Location &d = symbols[*it].def;
+        if (d.line <= line && line <= d.endLine)
+            return *it;
+    }
+    return -1;
+}
+
 bool CodeModel::isProjectSymbol(qint32 s) const
 {
     if (s < 0 || s >= symbols.size())

@@ -2,10 +2,11 @@
 
 #include <QColor>
 #include <QImage>
+#include <QQuickItem>
 #include <QPainterPath>
 #include <QSet>
 #include <QPointer>
-#include <QQuickPaintedItem>
+#include <QSGNode>
 #include <QVariantMap>
 #include <QtQml/qqmlregistration.h>
 
@@ -19,8 +20,11 @@
 // graph scene, hierarchical edge bundles, the treemap and the dependency
 // matrix. Colours come from QML (the theme) as a map.
 
-// Paints the edges of a GraphScene in the viewport, crisp at any zoom
-class EdgeLayer : public QQuickPaintedItem
+// The edges of a GraphScene on the GPU: triangles in a few vertex buffers,
+// one per colour, made when the layout or the edge style changes. Panning
+// and zooming only move a transform; the highlighted edges are a small
+// overlay over the dimmed rest.
+class EdgeLayer : public QQuickItem
 {
     Q_OBJECT
     QML_ELEMENT
@@ -33,7 +37,6 @@ class EdgeLayer : public QQuickPaintedItem
 
 public:
     explicit EdgeLayer(QQuickItem *parent = nullptr);
-    void paint(QPainter *painter) override;
 
     GraphScene *scene() const { return m_scene; }
     void setScene(GraphScene *s);
@@ -55,17 +58,26 @@ signals:
     void sceneChanged();
     void viewChanged();
 
+protected:
+    QSGNode *updatePaintNode(QSGNode *old, UpdatePaintNodeData *) override;
+
 private:
     QColor colorFor(int kind, bool cyclic) const;
+    void rebuildAll();
     QPointer<GraphScene> m_scene;
     qreal m_zoom = 1, m_panX = 0, m_panY = 0;
     QVariantMap m_colors;
     int m_hoveredEdge = -1;
+    bool m_baseDirty = true, m_overlayDirty = true;
+    qreal m_builtZoom = 1;   // lines are at least a pixel wide at this zoom
+    // Render-thread side, valid between updatePaintNode calls
+    QSGNode *m_base = nullptr, *m_overlay = nullptr;
+    QVector<QPair<class QSGGeometryNode *, QColor>> m_baseNodes;
 };
 
 // Holten's hierarchical edge bundles: the code's hierarchy (folders,
 // files, classes) on a circle, dependencies as curves bundled along it
-class BundleView : public QQuickPaintedItem
+class BundleView : public QQuickItem
 {
     Q_OBJECT
     QML_ELEMENT
@@ -83,7 +95,6 @@ class BundleView : public QQuickPaintedItem
 
 public:
     explicit BundleView(QQuickItem *parent = nullptr);
-    void paint(QPainter *painter) override;
 
     qreal bundling() const { return m_beta; }
     void setBundling(qreal b);
@@ -114,6 +125,7 @@ signals:
     void rebuilt();
 
 protected:
+    QSGNode *updatePaintNode(QSGNode *old, UpdatePaintNodeData *) override;
     void geometryChange(const QRectF &n, const QRectF &o) override;
     void itemChange(ItemChange change, const ItemChangeData &value) override;
 
@@ -127,6 +139,7 @@ private:
         double angle = 0, angleFrom = 0, angleTo = 0;
         int symbol = -1, file = -1;
         int leaf = -1;      // index into m_leaves
+        QString folder;     // a folded folder as one leaf
     };
     struct BLink {
         int a, b;           // leaves
@@ -151,8 +164,10 @@ private:
     int m_hovered = -1;
     int m_activeSymbol = -1;
     qreal m_zoom = 1;
-    QImage m_cache;
-    bool m_cacheValid = false;
+    bool m_cacheValid = false;   // the links' and labels' nodes are up to date
+    class QSGOpacityNode *m_sgFade = nullptr;   // all of it, faded while a leaf is hovered
+    QSGNode *m_sgOverlay = nullptr;
+    void ensurePaths();
     QVector<QVector<int>> m_chains;       // per link, the hierarchy nodes it bends through
     QVector<QPainterPath> m_paths;        // per link, in item coordinates
     QVector<QPair<QPointF, QPointF>> m_ends;
@@ -164,7 +179,7 @@ private:
 
 // A squarified treemap of folders, files and their classes and
 // functions: area for size, colour for a metric
-class TreemapView : public QQuickPaintedItem
+class TreemapView : public QQuickItem
 {
     Q_OBJECT
     QML_ELEMENT
@@ -185,7 +200,6 @@ public:
     Q_ENUM(SizeMetric)
 
     explicit TreemapView(QQuickItem *parent = nullptr);
-    void paint(QPainter *painter) override;
 
     int colorMetric() const { return m_colorMetric; }
     void setColorMetric(int m);
@@ -211,12 +225,13 @@ signals:
     void hoverChanged();
 
 protected:
+    QSGNode *updatePaintNode(QSGNode *old, UpdatePaintNodeData *) override;
     void geometryChange(const QRectF &n, const QRectF &o) override;
     void itemChange(ItemChange change, const ItemChangeData &value) override;
 
 private:
     bool m_dirty = false;
-    QImage m_image;          // the map without hover and active outlines
+    QSGNode *m_sgBase = nullptr, *m_sgOverlay = nullptr;   // the map, and the hover over it
     bool m_imageValid = false;
     struct TNode {
         QString name, path;
@@ -252,7 +267,7 @@ private:
 
 // A dependency structure matrix: rows depend on columns, ordered so that
 // dependencies come first; cycles show above the diagonal
-class MatrixView : public QQuickPaintedItem
+class MatrixView : public QQuickItem
 {
     Q_OBJECT
     QML_ELEMENT
@@ -273,7 +288,6 @@ class MatrixView : public QQuickPaintedItem
 
 public:
     explicit MatrixView(QQuickItem *parent = nullptr);
-    void paint(QPainter *painter) override;
 
     int level() const { return m_level; }
     void setLevel(int l);
@@ -306,6 +320,7 @@ signals:
     void viewChanged();
 
 protected:
+    QSGNode *updatePaintNode(QSGNode *old, UpdatePaintNodeData *) override;
     void geometryChange(const QRectF &n, const QRectF &o) override;
     void itemChange(ItemChange change, const ItemChangeData &value) override;
 
@@ -328,6 +343,8 @@ private:
     qreal m_labelWidth = 200;
     qreal m_viewX = 0, m_viewY = 0;
     bool m_dirty = false;   // the model changed while hidden
+    bool m_baseValid = false;   // the cells' nodes are up to date (hover drawn apart)
+    QSGNode *m_sgBase = nullptr, *m_sgOverlay = nullptr;
     int m_maxCount = 1;
     std::shared_ptr<const Unravel::CodeModel> m_model;
 };

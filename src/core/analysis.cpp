@@ -112,8 +112,47 @@ void finishGraph(DepGraph &g)
 
 } // namespace
 
+QString foldedFolderOf(const QString &module, const QStringList &folded)
+{
+    QString best;
+    for (const QString &f : folded) {
+        if (!f.isEmpty() && (module == f || module.startsWith(f + QLatin1Char('/'))) && (best.isEmpty() || f.size() < best.size()))
+            best = f;
+    }
+    return best;
+}
+
+QStringList vendorFolders(const CodeModel &m)
+{
+    static const QStringList names = {"3rdparty", "3rd_party", "3rd-party", "thirdparty", "third_party", "third-party",
+                                      "vendor", "vendors", "external", "externals", "extern", "deps", "_deps",
+                                      "contrib", "submodules"};
+    QStringList out;
+    for (const QString &module : m.modules) {
+        const QStringList parts = module.split(QLatin1Char('/'));
+        for (qsizetype i = 0; i < parts.size(); ++i) {
+            if (names.contains(parts[i].toLower())) {
+                const QString top = parts.mid(0, i + 1).join(QLatin1Char('/'));
+                if (!out.contains(top) && foldedFolderOf(top, out).isEmpty())
+                    out << top;
+                break;
+            }
+        }
+    }
+    // The outermost only
+    QStringList outer;
+    for (const QString &f : std::as_const(out)) {
+        QStringList others = out;
+        others.removeAll(f);
+        if (foldedFolderOf(f, others).isEmpty())
+            outer << f;
+    }
+    outer.sort();
+    return outer;
+}
+
 DepGraph dependencyGraph(const CodeModel &m, Level level, int moduleDepth, bool withExternal,
-                         const QString &filterModule)
+                         const QString &filterModule, const QStringList &folded)
 {
     DepGraph g;
     g.level = level;
@@ -134,13 +173,31 @@ DepGraph dependencyGraph(const CodeModel &m, Level level, int moduleDepth, bool 
             return true;
         return module == filterModule || module.startsWith(filterModule + QLatin1Char('/'));
     };
-    auto newNode = [&](const QString &name, qint32 id, qint32 size, bool in) {
+    auto newNode = [&](const QString &name, qint32 id, qint32 size, bool in, const QString &folder = QString()) {
         g.names.append(name);
         g.ids.append(id);
         g.size.append(size);
         g.complexity.append(0);
+        g.folder.append(folder);
         nodeInFilter.append(in);
         return qint32(g.names.size() - 1);
+    };
+    // Folded folders: one node each, at every level
+    QVector<QString> foldOfFile(nf);
+    if (!folded.isEmpty()) {
+        for (qint32 f = 0; f < nf; ++f) {
+            if (m.files[f].project)
+                foldOfFile[f] = foldedFolderOf(m.files[f].module, folded);
+        }
+    }
+    QHash<QString, qint32> foldNode;
+    auto nodeForFold = [&](const QString &folder) {
+        auto it = foldNode.find(folder);
+        if (it == foldNode.end())
+            it = foldNode.insert(folder, newNode(folder.isEmpty() ? QStringLiteral("(root)") : folder, -1, 0,
+                                                 inFilter(folder) || (!filterModule.isEmpty() && filterModule.startsWith(folder + QLatin1Char('/'))),
+                                                 folder));
+        return *it;
     };
 
     // The node of a file, made on first use, cached; -1 to leave it out
@@ -157,6 +214,10 @@ DepGraph dependencyGraph(const CodeModel &m, Level level, int moduleDepth, bool 
             return -1;
         }
         const QString &mod = moduleOfFile[file];
+        if (!foldOfFile[file].isEmpty()) {
+            cached = nodeForFold(foldOfFile[file]);
+            return cached;
+        }
         if (level == Level::Module) {
             auto it = nodeOfModule.find(mod);
             if (it == nodeOfModule.end())
@@ -184,6 +245,11 @@ DepGraph dependencyGraph(const CodeModel &m, Level level, int moduleDepth, bool 
         const Symbol &sym = m.symbols[owner];
         if ((sym.has(External) && !withExternal) || sym.has(Generated) || sym.has(FromMacro))
             return -1;
+        const Location where = sym.where();
+        if (!folded.isEmpty() && where.file >= 0 && where.file < nf && !foldOfFile[where.file].isEmpty()) {
+            cached = nodeForFold(foldOfFile[where.file]);
+            return cached;
+        }
         auto it = nodeOfId.find(owner);
         if (it == nodeOfId.end()) {
             const Location w = sym.where();
@@ -240,6 +306,10 @@ DepGraph dependencyGraph(const CodeModel &m, Level level, int moduleDepth, bool 
         }
         // Only what is in the filter, and what it links to
         for (qint32 n = 0; n < g.ids.size(); ++n) {
+            if (g.ids[n] < 0) {
+                g.size[n]++;   // a folded folder: count its classes
+                continue;
+            }
             const Symbol &cls = m.symbols[g.ids[n]];
             for (qint32 c : cls.children) {
                 if (isFunction(m.symbols[c].kind))
@@ -252,7 +322,7 @@ DepGraph dependencyGraph(const CodeModel &m, Level level, int moduleDepth, bool 
             if (!file.project || file.generated || !inFilter(moduleOfFile[f]))
                 continue;
             const qint32 n = nodeForFile(f);
-            if (n >= 0 && level == Level::Module)
+            if (n >= 0 && (level == Level::Module || !g.folder[n].isEmpty()))
                 g.size[n] += file.codeLines;
         }
         for (qint32 f = 0; f < nf; ++f) {
@@ -307,6 +377,7 @@ DepGraph dependencyGraph(const CodeModel &m, Level level, int moduleDepth, bool 
             out.ids.append(g.ids[n]);
             out.size.append(g.size[n]);
             out.complexity.append(g.complexity[n]);
+            out.folder.append(g.folder[n]);
         }
         for (DepGraph::Link l : std::as_const(g.links)) {
             l.from = map[l.from];

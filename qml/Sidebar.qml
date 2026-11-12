@@ -117,6 +117,8 @@ Pane {
             required property int file
             required property bool unused
             required property bool external
+            required property string path
+            readonly property bool folded: kind === -3 && Session.foldedFolders.indexOf(path) >= 0
 
             readonly property bool active: (symbol >= 0 && symbol === Session.activeSymbol)
                                          || (symbol < 0 && file >= 0 && file === Session.activeFile)
@@ -140,6 +142,19 @@ Pane {
                 }
                 onDoubleTapped: if (node.hasChildren) node.treeView.toggleExpanded(node.row)
             }
+            TapHandler {
+                acceptedButtons: Qt.RightButton
+                enabled: node.kind === -3
+                onTapped: folderMenu.popup()
+            }
+            Menu {
+                id: folderMenu
+                MenuItem {
+                    text: node.folded ? qsTr("Unfold %1").arg(node.path) : qsTr("Fold %1 into one node").arg(node.path)
+                    onTriggered: node.folded ? Session.unfold(node.path) : Session.fold(node.path)
+                }
+                MenuItem { text: qsTr("Unfold all"); enabled: Session.foldedFolders.length > 0; onTriggered: Session.unfoldAll() }
+            }
             RowLayout {
                 anchors.fill: parent
                 anchors.leftMargin: 8 + node.depth * 14
@@ -158,9 +173,9 @@ Pane {
                     TapHandler { onTapped: node.treeView.toggleExpanded(node.row) }
                 }
                 Icon {
-                    name: node.kind === -3 && node.expanded ? "folder-open" : node.iconName
+                    name: node.folded ? "package" : node.kind === -3 && node.expanded ? "folder-open" : node.iconName
                     size: 15
-                    color: node.kind === -3 ? Theme.fileColor : Theme.kindColor(node.kind)
+                    color: node.folded ? Theme.namespaceColor : node.kind === -3 ? Theme.fileColor : Theme.kindColor(node.kind)
                 }
                 Label {
                     text: node.name
@@ -169,6 +184,12 @@ Pane {
                     color: node.external ? Theme.textMuted : Theme.text
                     font.strikeout: node.unused
                     font.weight: node.active ? Styles.Primitives.fontWeight.semiBold : Styles.Primitives.fontWeight.regular
+                }
+                Label {
+                    visible: node.folded
+                    text: qsTr("folded")
+                    color: Theme.namespaceColor
+                    font: Theme.smallFont
                 }
                 Label {
                     visible: node.kind === -2

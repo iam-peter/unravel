@@ -206,6 +206,8 @@ void Session::open(const QString &pathOrUrl)
     m_active = Place();
     addRecent(path);
     loadBookmarks();
+    m_folded = QSettings().value(settingsKey() + QStringLiteral("/folded")).toStringList();
+    emit foldedChanged();
     emit projectChanged();
     emit activeChanged();
     startIndexing(true);
@@ -883,4 +885,73 @@ bool Session::writeText(const QString &pathOrUrl, const QString &text) const
     if (!f.open(QIODevice::WriteOnly))
         return false;
     return f.write(text.toUtf8()) >= 0;
+}
+
+// --- Folded folders ------------------------------------------------------------------
+
+QStringList Session::vendorFolders() const
+{
+    return m_model ? Analysis::vendorFolders(*m_model) : QStringList();
+}
+
+void Session::setFolded(QStringList folders)
+{
+    folders.removeAll(QString());
+    folders.removeDuplicates();
+    folders.sort();
+    if (folders == m_folded)
+        return;
+    m_folded = folders;
+    if (!m_projectPath.isEmpty())
+        QSettings().setValue(settingsKey() + QStringLiteral("/folded"), m_folded);
+    emit foldedChanged();
+}
+
+void Session::fold(const QString &folder)
+{
+    // Folding a folder takes in folded folders inside it
+    QStringList f;
+    for (const QString &x : std::as_const(m_folded)) {
+        if (x != folder && !x.startsWith(folder + QLatin1Char('/')))
+            f << x;
+    }
+    f << folder;
+    setFolded(f);
+}
+
+void Session::unfold(const QString &folder)
+{
+    QStringList f = m_folded;
+    f.removeAll(folder);
+    setFolded(f);
+}
+
+QString Session::foldOfFile(int file) const
+{
+    if (!m_model || file < 0 || file >= m_model->files.size() || !m_model->files[file].project)
+        return {};
+    return Analysis::foldedFolderOf(m_model->files[file].module, m_folded);
+}
+
+QStringList Session::foldersOfFile(int file) const
+{
+    QStringList out;
+    if (!m_model || file < 0 || file >= m_model->files.size() || !m_model->files[file].project)
+        return out;
+    QStringList parts = m_model->files[file].module.split(QLatin1Char('/'), Qt::SkipEmptyParts);
+    while (!parts.isEmpty()) {
+        out << parts.join(QLatin1Char('/'));
+        parts.removeLast();
+    }
+    return out;
+}
+
+void Session::foldVendorFolders()
+{
+    setFolded(m_folded + vendorFolders());
+}
+
+void Session::unfoldAll()
+{
+    setFolded({});
 }

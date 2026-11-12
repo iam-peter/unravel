@@ -45,6 +45,7 @@ Item {
                 }
                 ToolSeparator {}
                 KindToggles { id: kinds }
+                FoldMenu {}
                 ToolSeparator {}
                 Switch {
                     id: externalSwitch

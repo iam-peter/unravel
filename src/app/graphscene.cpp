@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "changes.h"
 #include "layout.h"
 #include "session.h"
 
@@ -89,6 +90,7 @@ GraphScene::GraphScene(QObject *parent)
         m_hidden.clear();   // symbol ids of the old model
         scheduleBuild();
     });
+    connect(Session::instance(), &Session::foldedChanged, this, &GraphScene::scheduleBuild);
 }
 
 void GraphScene::setActive(bool a)
@@ -243,14 +245,8 @@ void GraphScene::finish()
     for (SceneEdge &e : m_edges) {
         for (QPointF &p : e.points)
             p += QPointF(dx, dy);
-        e.path = edgePath(e);
-        // The arrow, once, not in every frame
-        const double len = e.path.length();
-        e.tip = e.path.pointAtPercent(1.0);
-        e.tipFrom = e.path.pointAtPercent(std::max(0.0, 1.0 - 9.0 / std::max(1.0, len)));
-        e.hitBounds = e.path.controlPointRect();
-        e.hit = QPainterPath();
     }
+    makePaths();
     for (QVariant &gv : m_groups) {
         QVariantMap g = gv.toMap();
         g[QStringLiteral("x")] = g.value(QStringLiteral("x")).toDouble() + dx;
@@ -264,7 +260,32 @@ void GraphScene::finish()
     emit highlightChanged();
 }
 
-QPainterPath GraphScene::edgePath(const SceneEdge &e)
+void GraphScene::makePaths()
+{
+    for (SceneEdge &e : m_edges) {
+        e.path = edgePath(e, m_edgeStyle);
+        e.poly = e.path.toSubpathPolygons().value(0);
+        // The arrow, once, not in every frame
+        const double len = e.path.length();
+        e.tip = e.path.pointAtPercent(1.0);
+        e.tipFrom = e.path.pointAtPercent(std::max(0.0, 1.0 - 9.0 / std::max(1.0, len)));
+        e.hitBounds = e.path.controlPointRect();
+        e.hit = QPainterPath();
+    }
+}
+
+void GraphScene::setEdgeStyle(int style)
+{
+    if (style == m_edgeStyle)
+        return;
+    m_edgeStyle = style;
+    emit edgeStyleChanged();
+    // Same nodes, other lines: no new layout, no new fit
+    makePaths();
+    emit pathsChanged();
+}
+
+QPainterPath GraphScene::edgePath(const SceneEdge &e, int style)
 {
     QPainterPath path;
     const QVector<QPointF> &p = e.points;
@@ -280,6 +301,37 @@ QPainterPath GraphScene::edgePath(const SceneEdge &e)
         }
     };
     path.moveTo(p.first());
+    if (style == Straight) {
+        for (qsizetype i = 1; i < p.size(); ++i)
+            path.lineTo(p[i]);
+        return path;
+    }
+    if (style == Orthogonal) {
+        // Steps along the flow: out of the port, across halfway, into the next
+        const bool horizontal = e.startPort == Left || e.startPort == Right || e.startPort == Auto;
+        if (p.size() == 2 && e.startPort == e.endPort && e.startPort != Auto) {
+            // Both ends on one side: a bracket
+            const QPointF out = dir(e.startPort) * 28;
+            path.lineTo(p[0] + out);
+            path.lineTo(horizontal ? QPointF(p[0].x() + out.x(), p[1].y()) : QPointF(p[1].x(), p[0].y() + out.y()));
+            path.lineTo(p[1]);
+            return path;
+        }
+        for (qsizetype i = 1; i < p.size(); ++i) {
+            const QPointF a = p[i - 1], b = p[i];
+            if (horizontal) {
+                const double mx = (a.x() + b.x()) / 2;
+                path.lineTo(mx, a.y());
+                path.lineTo(mx, b.y());
+            } else {
+                const double my = (a.y() + b.y()) / 2;
+                path.lineTo(a.x(), my);
+                path.lineTo(b.x(), my);
+            }
+            path.lineTo(b);
+        }
+        return path;
+    }
     if (p.size() == 2) {
         const QPointF a = p[0], b = p[1];
         const double dist = std::hypot(b.x() - a.x(), b.y() - a.y());
@@ -442,6 +494,7 @@ SymbolGraph::SymbolGraph(QObject *parent)
     : GraphScene(parent)
 {
     connect(this, &SymbolGraph::inputChanged, this, &GraphScene::scheduleBuild);
+    connect(Changes::instance(), &Changes::changesChanged, this, &GraphScene::scheduleBuild);
 }
 
 void SymbolGraph::setSymbol(int s)
@@ -566,6 +619,29 @@ void SymbolGraph::build()
     QHash<qint32, Neighbour> neighbours;
     QVector<Item> items;
     QVector<Item> internal;
+    // Neighbours in folded folders become one node per folder, keyed -2 - index
+    const QStringList folded = Session::instance()->foldedFolders();
+    QStringList foldNames;
+    const Location centerAt = c.where();
+    const QString centerFold = centerAt.file >= 0 && m.files[centerAt.file].project
+                                   ? Analysis::foldedFolderOf(m.files[centerAt.file].module, folded) : QString();
+    auto foldKey = [&](qint32 node) -> qint32 {
+        if (folded.isEmpty())
+            return node;
+        const Location w = m.symbols[node].where();
+        if (w.file < 0 || !m.files[w.file].project)
+            return node;
+        const QString fold = Analysis::foldedFolderOf(m.files[w.file].module, folded);
+        if (fold.isEmpty() || fold == centerFold)
+            return node;
+        qsizetype i = foldNames.indexOf(fold);
+        if (i < 0) {
+            foldNames << fold;
+            i = foldNames.size() - 1;
+        }
+        return qint32(-2 - i);
+    };
+    QHash<qint32, QSet<qint32>> foldMembers;   // what is used in each folded folder
     QSet<qint32> centerMembers;
     if (active != center)
         centerMembers.insert(active);
@@ -588,7 +664,7 @@ void SymbolGraph::build()
         if ((edge.flags & RefImplicit) && edge.count == 1 && edge.kind == RefKind::Call
             && (o.kind == SymbolKind::Constructor || o.kind == SymbolKind::Destructor))
             return;   // the compiler's own calls of constructors add noise
-        const qint32 node = m.nodeOwner(other);
+        qint32 node = m.nodeOwner(other);
         if (node == center && active != center && other != center) {
             // Within the class: shown as brackets beside the members
             internal.append({e, edge.from, edge.to, center, outgoing});
@@ -597,9 +673,12 @@ void SymbolGraph::build()
         }
         if (node == center || node < 0 || m_hidden.contains(node))
             return;   // within the node
+        node = foldKey(node);
         Neighbour &n = neighbours[node];
         n.node = node;
-        if (other != node)
+        if (node < -1)
+            foldMembers[node].insert(other);
+        else if (other != node)
             n.members.insert(other);
         const double w = edge.count;
         if (edge.kind == RefKind::Inherit || edge.kind == RefKind::Override) {
@@ -709,6 +788,12 @@ void SymbolGraph::build()
             row[QStringLiteral("static")] = rs.has(Static);
             row[QStringLiteral("unused")] = Analysis::looksUnused(m, r);
             row[QStringLiteral("signature")] = rs.signature;
+            if (Changes::instance()->isTouched(r)) {   // in the selected commits
+                const History::Touched t = Changes::instance()->touched().value(r);
+                row[QStringLiteral("changed")] = true;
+                row[QStringLiteral("added")] = t.added;
+                row[QStringLiteral("lines")] = t.lines;
+            }
             rowList << row;
             if (rowY)
                 rowY->insert(r, y + kRow / 2);
@@ -755,7 +840,9 @@ void SymbolGraph::build()
             n.side = BottomSide;
         else
             n.side = n.out >= n.in ? RightSide : LeftSide;
-        if (m_grouping == ByNamespace) {
+        if (n.node < -1) {
+            n.group = QStringLiteral("(folded)");
+        } else if (m_grouping == ByNamespace) {
             const qint32 p = m.symbols[n.node].parent;
             n.group = p >= 0 ? m.displayName(p) : QStringLiteral("(global)");
         } else if (m_grouping == ByFile) {
@@ -802,12 +889,41 @@ void SymbolGraph::build()
             const double by = y->baryCount ? y->bary / y->baryCount : 0;
             if (std::abs(bx - by) > 0.5)
                 return bx < by;
-            return m.symbols[x->node].name < m.symbols[y->node].name;
+            const QString nx = x->node < -1 ? foldNames[-2 - x->node] : m.symbols[x->node].name;
+            const QString ny = y->node < -1 ? foldNames[-2 - y->node] : m.symbols[y->node].name;
+            return nx < ny;
         });
         QVector<QVariantMap> made;
         QVector<double> sizes, wants;
         double maxW = 0, maxH = 0;
         for (Neighbour *n : std::as_const(list)) {
+            if (n->node < -1) {
+                // A folded folder: one card, unfolded by a click
+                const QString fold = foldNames[-2 - n->node];
+                QVariantMap node;
+                node[QStringLiteral("symbol")] = -1;
+                node[QStringLiteral("file")] = -1;
+                node[QStringLiteral("kind")] = -4;
+                node[QStringLiteral("folder")] = fold;
+                node[QStringLiteral("title")] = QFileInfo(fold).fileName() + QStringLiteral("/");
+                node[QStringLiteral("subtitle")] = tr("%1 · %n symbols used", nullptr, int(foldMembers.value(n->node).size())).arg(fold);
+                node[QStringLiteral("compact")] = true;
+                node[QStringLiteral("rows")] = QVariantList();
+                node[QStringLiteral("side")] = side;
+                node[QStringLiteral("group")] = n->group;
+                const double w = std::clamp(std::max(textWidth(node[QStringLiteral("title")].toString(), true) + 30,
+                                                     textWidth(node[QStringLiteral("subtitle")].toString()) * 0.92) + 2 * kPad,
+                                            kMinW, kMaxW);
+                node[QStringLiteral("w")] = w;
+                node[QStringLiteral("h")] = 44.0;
+                made << node;
+                maxW = std::max(maxW, w);
+                maxH = std::max(maxH, 44.0);
+                const bool vertical = side == LeftSide || side == RightSide;
+                sizes << (vertical ? 44.0 : w);
+                wants << (vertical ? (n->baryCount ? n->bary / n->baryCount : ch / 2) - 22 : 0);
+                continue;
+            }
             QVector<qint32> mem(n->members.cbegin(), n->members.cend());
             std::sort(mem.begin(), mem.end(), [&](qint32 x, qint32 y) { return m.symbols[x].name < m.symbols[y].name; });
             if (mem.size() > 30)
@@ -870,7 +986,7 @@ void SymbolGraph::build()
             b[QStringLiteral("title")] = tr("%n more", nullptr, int(rest.size()));
             QStringList names;
             for (const Neighbour *n : std::as_const(rest))
-                names << m.symbols[n->node].name;
+                names << (n->node < -1 ? foldNames[-2 - n->node] : m.symbols[n->node].name);
             b[QStringLiteral("subtitle")] = names.mid(0, 12).join(QStringLiteral(", ")) + (names.size() > 12 ? QStringLiteral("…") : QString());
             b[QStringLiteral("w")] = 160.0;
             b[QStringLiteral("h")] = 34.0;
@@ -942,7 +1058,8 @@ void SymbolGraph::build()
             continue;
         const int side = m_nodes[other].toMap().value(QStringLiteral("side")).toInt();
         const qint32 selfSym = it.outgoing ? it.from : it.to;
-        const qint32 otherSym = isBundle ? -1 : (it.outgoing ? it.to : it.from);
+        // A bundle or a folded folder: all of it meets in one point
+        const qint32 otherSym = isBundle || it.neighbour < -1 ? -1 : (it.outgoing ? it.to : it.from);
         // One scene edge per pair of rows and kind
         const quint64 key = (quint64(quint32(selfSym)) << 40) ^ (quint64(quint32(otherSym + 1)) << 8)
                           ^ (quint64(it.outgoing) << 7) ^ quint64(edge.kind) ^ (quint64(other) << 20);
@@ -1431,7 +1548,8 @@ void DependencyScene::build()
 {
     const CodeModel &m = *m_built;
     const auto level = Analysis::Level(std::clamp(m_level, 0, 2));
-    m_graph = Analysis::dependencyGraph(m, level, m_moduleDepth, m_showExternal, m_filter);
+    m_graph = Analysis::dependencyGraph(m, level, m_moduleDepth, m_showExternal, m_filter,
+                                        Session::instance()->foldedFolders());
     const Analysis::DepGraph &g = m_graph;
     const qint32 n = qint32(g.names.size());
 
@@ -1460,11 +1578,14 @@ void DependencyScene::build()
         index.insert(i, int(lnodes.size()));
         Layout::Node ln;
         QString title = g.names[i];
-        if (level == Analysis::Level::File)
+        if (!g.folder[i].isEmpty())
+            title = QFileInfo(g.folder[i]).fileName() + QStringLiteral("/");
+        else if (level == Analysis::Level::File)
             title = QFileInfo(g.names[i]).fileName();
         else if (level == Analysis::Level::Class)
             title = m.symbols[g.ids[i]].name;
-        const QString metric = level == Analysis::Level::Class ? tr("%1 members · cc %2").arg(g.size[i]).arg(g.complexity[i])
+        const QString metric = !g.folder[i].isEmpty() ? tr("folded · %1 lines").arg(g.size[i])
+                             : level == Analysis::Level::Class ? tr("%1 members · cc %2").arg(g.size[i]).arg(g.complexity[i])
                                                                : tr("%1 lines · cc %2").arg(g.size[i]).arg(g.complexity[i]);
         ln.w = std::clamp(std::max(textWidth(title, true) + 26, textWidth(metric) * 0.95) + 2 * kPad, 110.0, 320.0);
         ln.h = 44;
@@ -1500,7 +1621,13 @@ void DependencyScene::build()
         nm[QStringLiteral("symbol")] = -1;
         nm[QStringLiteral("file")] = -1;
         nm[QStringLiteral("kind")] = -3;
-        if (level == Analysis::Level::File) {
+        if (!g.folder[i].isEmpty()) {
+            // A folded folder: one node for all of it
+            title = QFileInfo(g.folder[i]).fileName() + QStringLiteral("/");
+            subtitle = g.folder[i];
+            nm[QStringLiteral("kind")] = -4;
+            nm[QStringLiteral("folder")] = g.folder[i];
+        } else if (level == Analysis::Level::File) {
             title = QFileInfo(g.names[i]).fileName();
             subtitle = QFileInfo(g.names[i]).path();
             if (subtitle == QLatin1String("."))
@@ -1523,7 +1650,10 @@ void DependencyScene::build()
             cyclicComponents.insert(g.component[i]);
         nm[QStringLiteral("title")] = title;
         nm[QStringLiteral("subtitle")] = subtitle;
-        nm[QStringLiteral("metric")] = level == Analysis::Level::Class
+        nm[QStringLiteral("metric")] = !g.folder[i].isEmpty() && level == Analysis::Level::Class
+                                           ? tr("folded · %n classes", nullptr, g.size[i])
+                                       : !g.folder[i].isEmpty() ? tr("folded · %1 lines").arg(g.size[i])
+                                       : level == Analysis::Level::Class
                                            ? tr("%1 members · cc %2").arg(g.size[i]).arg(g.complexity[i])
                                            : tr("%1 lines · cc %2").arg(g.size[i]).arg(g.complexity[i]);
         nm[QStringLiteral("w")] = lnodes[k].w;
@@ -1578,4 +1708,313 @@ void DependencyScene::build()
         m_summary += tr(" (the %1 largest of %2)").arg(keep.size()).arg(n);
     if (m_cycleCount)
         m_summary += tr(" · %n cycles", nullptr, m_cycleCount);
+}
+
+// --- ChangeScene ---------------------------------------------------------------------
+
+ChangeScene::ChangeScene(QObject *parent)
+    : GraphScene(parent)
+{
+    connect(this, &ChangeScene::inputChanged, this, &GraphScene::scheduleBuild);
+    connect(Changes::instance(), &Changes::changesChanged, this, &GraphScene::scheduleBuild);
+}
+
+void ChangeScene::setContext(int c)
+{
+    if (c == m_context)
+        return;
+    m_context = c;
+    emit inputChanged();
+}
+
+void ChangeScene::setVertical(bool v)
+{
+    if (v == m_vertical)
+        return;
+    m_vertical = v;
+    emit inputChanged();
+}
+
+void ChangeScene::setMaxContext(int n)
+{
+    if (n == m_maxContext)
+        return;
+    m_maxContext = n;
+    emit inputChanged();
+}
+
+void ChangeScene::build()
+{
+    const CodeModel &m = *m_built;
+    const auto &touched = Changes::instance()->touched();
+    if (touched.isEmpty()) {
+        m_summary = Changes::instance()->selected().isEmpty() ? tr("Pick commits to see the code they changed")
+                                                              : tr("The selected commits changed no indexed code");
+        return;
+    }
+    auto noise = [&](const Edge &e, qint32 other) {
+        const Symbol &o = m.symbols[other];
+        if (e.kind == RefKind::Declaration || o.has(External) || o.has(FromMacro) || o.kind == SymbolKind::Namespace)
+            return true;
+        return (e.flags & RefImplicit) && e.kind == RefKind::Call
+            && (o.kind == SymbolKind::Constructor || o.kind == SymbolKind::Destructor);
+    };
+
+    // The changed nodes (classes, free functions…) and their changed members
+    struct NodeData {
+        qint32 owner = -1;
+        bool changed = false;     // part of the change, or context
+        bool ownerTouched = false;
+        QVector<qint32> rows;
+        QSet<qint32> rowSet;
+        double weight = 0;
+    };
+    QHash<qint32, NodeData> nodes;
+    for (auto it = touched.cbegin(); it != touched.cend(); ++it) {
+        const qint32 s = it.key();
+        const qint32 o = m.nodeOwner(s);
+        if (o < 0 || m_hidden.contains(o))
+            continue;
+        NodeData &n = nodes[o];
+        n.owner = o;
+        n.changed = true;
+        if (o == s) {
+            n.ownerTouched = true;
+        } else if (!n.rowSet.contains(s)) {
+            n.rowSet.insert(s);
+            n.rows.append(s);
+        }
+    }
+    // The context: what uses the changed code, and what it uses
+    auto addContext = [&](qint32 other) {
+        const qint32 o = m.nodeOwner(other);
+        if (o < 0 || m_hidden.contains(o))
+            return;
+        NodeData &n = nodes[o];
+        n.owner = o;
+        n.weight += 1;
+        if (other != o && !n.rowSet.contains(other)) {
+            n.rowSet.insert(other);
+            n.rows.append(other);
+        }
+    };
+    if (m_context != ChangedOnly) {
+        QHash<qint32, double> weight;
+        QVector<QPair<qint32, qint32>> candidates;   // (owner, symbol)
+        for (auto it = touched.cbegin(); it != touched.cend(); ++it) {
+            for (qint32 e : m.inEdges[it.key()]) {
+                const qint32 u = m.edges[e].from;
+                if (!touched.contains(u) && !noise(m.edges[e], u))
+                    candidates.append({m.nodeOwner(u), u});
+            }
+            if (m_context == WithUsersAndUses) {
+                for (qint32 e : m.outEdges[it.key()]) {
+                    const qint32 v = m.edges[e].to;
+                    if (!touched.contains(v) && !noise(m.edges[e], v))
+                        candidates.append({m.nodeOwner(v), v});
+                }
+            }
+        }
+        for (const auto &[o, s] : std::as_const(candidates))
+            weight[o] += 1;
+        // The strongest new nodes; members of changed ones always
+        QVector<qint32> owners;
+        for (auto it = weight.cbegin(); it != weight.cend(); ++it) {
+            if (!nodes.contains(it.key()))
+                owners.append(it.key());
+        }
+        std::sort(owners.begin(), owners.end(), [&](qint32 a, qint32 b) { return weight[a] > weight[b]; });
+        const QSet<qint32> allowed(owners.cbegin(), owners.cbegin() + std::min<qsizetype>(m_maxContext, owners.size()));
+        int hiddenContext = int(owners.size()) - int(allowed.size());
+        // Unchanged members of a changed class only when everything around
+        // is asked for: else they bury the change
+        for (const auto &[o, s] : std::as_const(candidates)) {
+            const bool changedNode = nodes.contains(o) && nodes[o].changed;
+            if ((changedNode && m_context == WithUsersAndUses) || (!changedNode && (nodes.contains(o) || allowed.contains(o))))
+                addContext(s);
+        }
+        if (hiddenContext > 0)
+            m_summary = tr("%n more users not shown", nullptr, hiddenContext);
+    }
+
+    // Cards: changed members first in the order of the code, then the context rows
+    QVector<qint32> order = nodes.keys().toVector();
+    std::sort(order.begin(), order.end(), [&](qint32 a, qint32 b) {
+        if (nodes[a].changed != nodes[b].changed)
+            return nodes[a].changed;
+        return m.displayName(a) < m.displayName(b);
+    });
+    QHash<qint32, int> nodeIndex;
+    QHash<qint32, QPair<int, double>> rowAt;   // symbol -> (node, y in it)
+    QVector<Layout::Node> lnodes;
+    for (qint32 o : std::as_const(order)) {
+        NodeData &n = nodes[o];
+        std::sort(n.rows.begin(), n.rows.end(), [&](qint32 a, qint32 b) {
+            const bool ta = touched.contains(a), tb = touched.contains(b);
+            if (ta != tb)
+                return ta;
+            return m.symbols[a].where().line < m.symbols[b].where().line;
+        });
+        const Symbol &sym = m.symbols[o];
+        const QString title = m.displayName(o) + (isFunction(sym.kind) ? QStringLiteral("()") : QString());
+        // Room for the icon and the "±n" of changed lines beside the title
+        double w = textWidth(title, true) + 2 * kPad + 30 + (n.changed ? textWidth(QStringLiteral("±0000")) : 0);
+        double y = kHeader;
+        QVariantList rows;
+        int changedRows = 0, changedLines = touched.value(o).lines;
+        for (qint32 r : std::as_const(n.rows)) {
+            const Symbol &rs = m.symbols[r];
+            const bool changed = touched.contains(r);
+            QVariantMap row;
+            const QString name = memberName(m, r, o);
+            row[QStringLiteral("symbol")] = r;
+            row[QStringLiteral("name")] = name;
+            row[QStringLiteral("kind")] = int(rs.kind);
+            row[QStringLiteral("y")] = y;
+            row[QStringLiteral("h")] = kRow;
+            row[QStringLiteral("changed")] = changed;
+            row[QStringLiteral("added")] = changed && touched.value(r).added;
+            row[QStringLiteral("lines")] = changed ? touched.value(r).lines : 0;
+            row[QStringLiteral("virtual")] = rs.has(Virtual);
+            row[QStringLiteral("signature")] = rs.signature;
+            rows << row;
+            rowAt.insert(r, {int(m_nodes.size()), y + kRow / 2});
+            w = std::max(w, textWidth(name) + 2 * kPad + 56);
+            y += kRow;
+            if (changed) {
+                ++changedRows;
+                changedLines += touched.value(r).lines;
+            }
+        }
+        if (!n.rows.isEmpty())
+            y += 6;
+        w = std::clamp(w, kMinW, kMaxW + 40);
+        QVariantMap node;
+        node[QStringLiteral("symbol")] = o;
+        node[QStringLiteral("file")] = -1;
+        node[QStringLiteral("kind")] = int(sym.kind);
+        node[QStringLiteral("title")] = title;
+        node[QStringLiteral("subtitle")] = subtitleOf(m, o);
+        node[QStringLiteral("w")] = w;
+        node[QStringLiteral("h")] = std::max(y, kHeader + 2);
+        node[QStringLiteral("rows")] = rows;
+        node[QStringLiteral("changed")] = n.changed;
+        node[QStringLiteral("context")] = !n.changed;
+        node[QStringLiteral("added")] = n.ownerTouched && touched.value(o).added;
+        node[QStringLiteral("changedLines")] = changedLines;
+        node[QStringLiteral("external")] = sym.has(External);
+        nodeIndex.insert(o, int(m_nodes.size()));
+        rowAt.insert(o, {int(m_nodes.size()), kHeader / 2});
+        m_nodes << node;
+        m_nodeSymbols << o;
+        Layout::Node ln;
+        ln.w = w;
+        ln.h = node[QStringLiteral("h")].toDouble();
+        lnodes << ln;
+    }
+
+    // Edges between what is shown, one per pair of rows and kind
+    struct Item {
+        qint32 from, to;
+        int kind;
+        int count;
+        qint32 modelEdge;
+    };
+    QVector<Item> items;
+    QSet<quint64> seen;
+    auto consider = [&](qint32 e) {
+        const Edge &edge = m.edges[e];
+        if (edge.kind == RefKind::Declaration || edge.from == edge.to)
+            return;
+        if (!rowAt.contains(edge.from) || !rowAt.contains(edge.to))
+            return;
+        if (!touched.contains(edge.from) && !touched.contains(edge.to))
+            return;   // context with context
+        const quint64 k = (quint64(quint32(e)));
+        if (seen.contains(k))
+            return;
+        seen.insert(k);
+        items.append({edge.from, edge.to, int(edge.kind), edge.count, e});
+    };
+    for (auto it = touched.cbegin(); it != touched.cend(); ++it) {
+        for (qint32 e : m.outEdges[it.key()])
+            consider(e);
+        for (qint32 e : m.inEdges[it.key()])
+            consider(e);
+    }
+    QVector<Layout::Link> links;
+    QHash<quint64, int> linkOf;
+    for (const Item &it : std::as_const(items)) {
+        const int a = rowAt.value(it.from).first, b = rowAt.value(it.to).first;
+        if (a == b)
+            continue;
+        const quint64 k = (quint64(quint32(a)) << 32) | quint32(b);
+        if (!linkOf.contains(k)) {
+            linkOf.insert(k, int(links.size()));
+            Layout::Link l;
+            l.from = a;
+            l.to = b;
+            links << l;
+        }
+    }
+    Layout::Options o;
+    o.direction = m_vertical ? Layout::Direction::TopToBottom : Layout::Direction::LeftToRight;
+    o.layerGap = m_vertical ? 80 : 150;
+    o.nodeGap = m_vertical ? 26 : 18;
+    Layout::layered(lnodes, links, o);
+    for (int i = 0; i < lnodes.size(); ++i)
+        m_rects << QRectF(lnodes[i].x, lnodes[i].y, lnodes[i].w, lnodes[i].h);
+
+    for (const Item &it : std::as_const(items)) {
+        const auto [a, ya] = rowAt.value(it.from);
+        const auto [b, yb] = rowAt.value(it.to);
+        SceneEdge e;
+        e.kind = it.kind;
+        e.count = it.count;
+        e.modelEdges << it.modelEdge;
+        e.dashed = it.kind == int(RefKind::Override);
+        e.fromNode = a;
+        e.toNode = b;
+        e.fromSymbol = it.from;
+        e.toSymbol = it.to;
+        const QRectF ra = m_rects[a], rb = m_rects[b];
+        if (a == b) {
+            // Within one class: a bracket on its right
+            e.points = {QPointF(ra.right(), ra.top() + ya), QPointF(ra.right(), ra.top() + yb)};
+            e.startPort = e.endPort = Right;
+            m_edges << e;
+            continue;
+        }
+        const Layout::Link &l = links[linkOf.value((quint64(quint32(a)) << 32) | quint32(b))];
+        const bool backwards = m_vertical ? rb.center().y() < ra.center().y() : rb.center().x() < ra.center().x();
+        if (m_vertical) {
+            e.points = {QPointF(ra.center().x(), backwards ? ra.top() : ra.bottom()),
+                        QPointF(rb.center().x(), backwards ? rb.bottom() : rb.top())};
+            e.startPort = backwards ? Top : Bottom;
+            e.endPort = backwards ? Bottom : Top;
+        } else {
+            e.points = {QPointF(backwards ? ra.left() : ra.right(), ra.top() + ya),
+                        QPointF(backwards ? rb.right() : rb.left(), rb.top() + yb)};
+            e.startPort = backwards ? Left : Right;
+            e.endPort = backwards ? Right : Left;
+        }
+        // Through the layout's bends for long edges
+        if (l.points.size() > 2) {
+            QVector<QPointF> pts = l.points;
+            pts.first() = e.points.first();
+            pts.last() = e.points.last();
+            e.points = pts;
+        }
+        m_edges << e;
+    }
+    int changedNodes = 0;
+    for (const NodeData &n : std::as_const(nodes))
+        changedNodes += n.changed;
+    const QString more = m_summary;
+    m_summary = tr("%n changed symbols", nullptr, int(touched.size())) + QStringLiteral(" in ")
+              + tr("%n classes and functions", nullptr, changedNodes);
+    if (int(nodes.size()) > changedNodes)
+        m_summary += QStringLiteral(" · ") + tr("%n around them", nullptr, int(nodes.size()) - changedNodes);
+    if (!more.isEmpty())
+        m_summary += QStringLiteral(" · ") + more;
 }

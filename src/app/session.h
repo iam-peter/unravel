@@ -49,6 +49,9 @@ class Session : public QObject
     Q_PROPERTY(bool canGoForward READ canGoForward NOTIFY activeChanged)
     Q_PROPERTY(QVariantList bookmarks READ bookmarks NOTIFY bookmarksChanged)
     Q_PROPERTY(bool activeBookmarked READ activeBookmarked NOTIFY activeBookmarkedChanged)
+    // Folders shown as one node each in the graphs (third-party code, say)
+    Q_PROPERTY(QStringList foldedFolders READ foldedFolders NOTIFY foldedChanged)
+    Q_PROPERTY(QStringList vendorFolders READ vendorFolders NOTIFY modelChanged)
 
 public:
     enum State { Idle, Discovering, Indexing, Ready };
@@ -111,6 +114,17 @@ public:
     Q_INVOKABLE void back();
     Q_INVOKABLE void forward();
     Q_INVOKABLE QVariantList history() const;
+    QStringList foldedFolders() const { return m_folded; }
+    QStringList vendorFolders() const;
+    Q_INVOKABLE void fold(const QString &folder);
+    Q_INVOKABLE void unfold(const QString &folder);
+    Q_INVOKABLE bool isFolded(const QString &folder) const { return m_folded.contains(folder); }
+    // The folded folder a file is in, or ""
+    Q_INVOKABLE QString foldOfFile(int file) const;
+    // Its folder and the folders above it, innermost first: what can be folded
+    Q_INVOKABLE QStringList foldersOfFile(int file) const;
+    Q_INVOKABLE void foldVendorFolders();
+    Q_INVOKABLE void unfoldAll();
     Q_INVOKABLE void toggleBookmark();
     Q_INVOKABLE void removeBookmark(int index);
     // A symbol worth starting with: main, or the most connected
@@ -148,6 +162,7 @@ signals:
     void bookmarksChanged();
     void activeBookmarkedChanged();
     void editorCommandChanged();
+    void foldedChanged();
     void message(const QString &text);
 
 private:
@@ -202,4 +217,6 @@ private:
     Place m_active;
     QList<Place> m_back, m_forward;
     QStringList m_bookmarkUsrs;
+    QStringList m_folded;
+    void setFolded(QStringList folders);
 };

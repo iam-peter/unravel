@@ -262,6 +262,8 @@ public:
     qint32 outermostType(qint32 symbol) const;
     // The function (or other symbol) whose definition contains a location
     qint32 enclosingFunction(const Location &loc) const;
+    // The innermost function or type whose definition spans a line of a file
+    qint32 innermostAt(qint32 file, qint32 line) const;
     // Whether a symbol is the project's own (defined or declared in a project file)
     bool isProjectSymbol(qint32 symbol) const;
     QString displayName(qint32 symbol) const;  // qualified, with the signature for functions

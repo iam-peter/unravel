@@ -36,6 +36,7 @@ class GraphScene : public QObject
     Q_PROPERTY(QVariantList groups READ groups NOTIFY changed)
     // Only an active scene lays itself out; an inactive one remembers to
     Q_PROPERTY(bool active READ active WRITE setActive NOTIFY activeChanged)
+    Q_PROPERTY(int edgeStyle READ edgeStyle WRITE setEdgeStyle NOTIFY edgeStyleChanged)
 
 public:
     enum Port { Auto, Left, Right, Top, Bottom };
@@ -54,6 +55,7 @@ public:
         bool bothWays = false;
         QPainterPath path;       // scene coordinates
         QPointF tip, tipFrom;    // the arrow: its point and where it comes from
+        QPolygonF poly;          // the path flattened: for the GPU and for pointing
         QRectF hitBounds;
         mutable QPainterPath hit; // the stroke to point at, made when first needed
     };
@@ -78,8 +80,12 @@ public:
     bool active() const { return m_active; }
     void setActive(bool a);
 
-    // The curve of an edge through its points, leaving and entering by its ports
-    static QPainterPath edgePath(const SceneEdge &e);
+    enum EdgeStyle { Curved, Straight, Orthogonal };
+    Q_ENUM(EdgeStyle)
+    // The line of an edge through its points, leaving and entering by its ports
+    static QPainterPath edgePath(const SceneEdge &e, int style = Curved);
+    int edgeStyle() const { return m_edgeStyle; }
+    void setEdgeStyle(int style);
 
     QVector<SceneEdge> &edges() { return m_edges; }
     const QVector<SceneEdge> &edges() const { return m_edges; }
@@ -104,6 +110,8 @@ signals:
     void fontChanged();
     void highlightChanged();
     void activeChanged();
+    void edgeStyleChanged();
+    void pathsChanged();   // the same layout, edges drawn another way
 
 public slots:
     void scheduleBuild();
@@ -130,6 +138,8 @@ protected:
     int m_revision = 0;
     bool m_buildPending = false;
     bool m_active = true;
+    int m_edgeStyle = Curved;
+    void makePaths();
     bool m_dirty = false;
     std::shared_ptr<const Unravel::CodeModel> m_built;   // the model the scene was made from
 };
@@ -299,4 +309,41 @@ private:
     int m_maxNodes = 150;
     int m_cycleCount = 0;
     Unravel::Analysis::DepGraph m_graph;
+};
+
+// Only the code that selected commits changed: the classes and functions
+// with their changed members, how they use each other, and if asked what
+// uses them (the change's reach) and what they use
+class ChangeScene : public GraphScene
+{
+    Q_OBJECT
+    QML_ELEMENT
+
+    Q_PROPERTY(int context READ context WRITE setContext NOTIFY inputChanged)
+    Q_PROPERTY(bool vertical READ vertical WRITE setVertical NOTIFY inputChanged)
+    Q_PROPERTY(int maxContext READ maxContext WRITE setMaxContext NOTIFY inputChanged)
+
+public:
+    enum Context { ChangedOnly, WithUsers, WithUsersAndUses };
+    Q_ENUM(Context)
+
+    explicit ChangeScene(QObject *parent = nullptr);
+
+    int context() const { return m_context; }
+    void setContext(int c);
+    bool vertical() const { return m_vertical; }
+    void setVertical(bool v);
+    int maxContext() const { return m_maxContext; }
+    void setMaxContext(int n);
+
+signals:
+    void inputChanged();
+
+protected:
+    void build() override;
+
+private:
+    int m_context = WithUsers;
+    bool m_vertical = false;
+    int m_maxContext = 40;
 };

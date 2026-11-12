@@ -62,6 +62,15 @@ Dialog {
             checked: Theme.prefs.wheelZooms
             onToggled: Theme.prefs.wheelZooms = checked
         }
+        RowLayout {
+            Label { text: qsTr("Edges in the graphs") }
+            ComboBox {
+                Layout.preferredWidth: 200
+                model: [qsTr("Curved"), qsTr("Straight"), qsTr("Right angles")]
+                currentIndex: Theme.prefs.edgeStyle
+                onActivated: index => Theme.prefs.edgeStyle = index
+            }
+        }
         Switch {
             text: qsTr("Dot grid behind the graphs")
             checked: Theme.prefs.showGrid

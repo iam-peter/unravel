@@ -3,6 +3,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import QtQuick.Shapes
 import IgittStyle as Styles
 import Unravel
 
@@ -68,6 +69,7 @@ Item {
                     model: [qsTr("Whole project")].concat(deps.moduleNames)
                 }
                 }
+                FoldMenu {}
                 RowLayout {
                 Switch { id: includesBox; text: qsTr("Includes only"); font: Theme.smallFont; visible: levelBar.currentIndex < 2 }
                 Switch { id: cyclesBox; text: qsTr("Cycles only"); font: Theme.smallFont }
@@ -139,40 +141,56 @@ Item {
                         font: Theme.smallFont
                         text: qsTr("Instability I = Ce/(Ca+Ce): 0 for what everything depends on, 1 for what depends on everything. Abstractness A: the share of abstract classes. Distance D = |A+I−1|: far from 0 means stable and concrete (hard to change) or unstable and abstract (useless).")
                     }
-                    // The main sequence chart
-                    Canvas {
+                    // The main sequence chart: items and a shape, drawn by the GPU
+                    Item {
                         id: chart
                         Layout.fillWidth: true
                         Layout.preferredHeight: width
                         property var metrics: view.active && Session.revision >= 0 ? Session.moduleMetrics() : []
-                        onMetricsChanged: requestPaint()
-                        onWidthChanged: requestPaint()
-                        Connections { target: Theme; function onDarkChanged() { chart.requestPaint() } }
-                        onPaint: {
-                            const ctx = getContext("2d")
-                            const w = width, h = height, m = 24
-                            ctx.clearRect(0, 0, w, h)
-                            ctx.strokeStyle = Theme.cardBorder
-                            ctx.strokeRect(m, 4, w - m - 4, h - m - 4)
-                            ctx.strokeStyle = Theme.success
-                            ctx.setLineDash([4, 4])
-                            ctx.beginPath(); ctx.moveTo(m, 4); ctx.lineTo(w - 4, h - m); ctx.stroke()
-                            ctx.setLineDash([])
-                            ctx.fillStyle = Theme.textMuted
-                            ctx.font = "10px sans-serif"
-                            ctx.fillText("I →", w - 26, h - 8)
-                            ctx.fillText("A", 4, 14)
-                            for (const mm of metrics) {
-                                if (mm.name.startsWith("<")) continue
-                                const x = m + mm.instability * (w - m - 4)
-                                const y = 4 + (1 - mm.abstractness) * (h - m - 4)
-                                const r = 3 + Math.sqrt(mm.lines) / 6
-                                ctx.fillStyle = mm.distance > 0.7 ? Theme.danger : mm.distance > 0.4 ? Theme.warning : Theme.accent
-                                ctx.globalAlpha = 0.55
-                                ctx.beginPath(); ctx.arc(x, y, Math.min(r, 18), 0, 2 * Math.PI); ctx.fill()
-                                ctx.globalAlpha = 1
-                                ctx.fillStyle = Theme.text
-                                ctx.fillText(mm.name.split("/").pop(), x + 6, y - 4)
+                        readonly property real m: 24
+                        readonly property real plotW: width - m - 4
+                        readonly property real plotH: height - m - 4
+                        Rectangle {
+                            x: chart.m; y: 4
+                            width: chart.plotW; height: chart.plotH
+                            color: "transparent"
+                            border.color: Theme.cardBorder
+                        }
+                        Shape {
+                            anchors.fill: parent
+                            preferredRendererType: Shape.CurveRenderer
+                            ShapePath {
+                                strokeColor: Theme.success
+                                strokeWidth: 1
+                                strokeStyle: ShapePath.DashLine
+                                dashPattern: [4, 4]
+                                fillColor: "transparent"
+                                startX: chart.m; startY: 4
+                                PathLine { x: chart.m + chart.plotW; y: 4 + chart.plotH }
+                            }
+                        }
+                        Label { x: 4; y: 4; text: "A"; font.pixelSize: 10; color: Theme.textMuted }
+                        Label { anchors.right: parent.right; anchors.bottom: parent.bottom; anchors.margins: 2; text: "I →"; font.pixelSize: 10; color: Theme.textMuted }
+                        Repeater {
+                            model: chart.metrics.filter(mm => !mm.name.startsWith("<"))
+                            Item {
+                                required property var modelData
+                                readonly property real r: Math.min(18, 3 + Math.sqrt(modelData.lines) / 6)
+                                x: chart.m + modelData.instability * chart.plotW
+                                y: 4 + (1 - modelData.abstractness) * chart.plotH
+                                Rectangle {
+                                    x: -parent.r; y: -parent.r
+                                    width: 2 * parent.r; height: width
+                                    radius: parent.r
+                                    opacity: 0.55
+                                    color: parent.modelData.distance > 0.7 ? Theme.danger : parent.modelData.distance > 0.4 ? Theme.warning : Theme.accent
+                                }
+                                Label {
+                                    x: 6; y: -16
+                                    text: parent.modelData.name.split("/").pop()
+                                    font.pixelSize: 10
+                                    color: Theme.text
+                                }
                             }
                         }
                     }

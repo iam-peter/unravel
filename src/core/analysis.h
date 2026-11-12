@@ -22,6 +22,7 @@ struct DepGraph {
     QVector<qint32> ids;        // per node: module index, file id or symbol id
     QVector<qint32> size;       // lines of code (modules, files) or members (classes)
     QVector<qint32> complexity; // summed complexity of the node's functions
+    QStringList folder;         // per node: the folded folder it stands for, or empty
     struct Link {
         qint32 from, to;
         qint32 count = 0;       // references
@@ -46,9 +47,16 @@ struct DepGraph {
 // The module of a file cut to `depth` folders (0 = whole path)
 QString moduleAt(const QString &module, int depth);
 
-// `filterModule`: only nodes in this module (and what they connect to), "" = all
+// `filterModule`: only nodes in this module (and what they connect to), "" = all.
+// `folded`: folders shown as one node each, whatever the level
 DepGraph dependencyGraph(const CodeModel &m, Level level, int moduleDepth = 0, bool withExternal = false,
-                         const QString &filterModule = QString());
+                         const QString &filterModule = QString(), const QStringList &folded = {});
+
+// The folded folder a module is in (the outermost), or ""
+QString foldedFolderOf(const QString &module, const QStringList &folded);
+
+// Folders that look like someone else's code: 3rdparty, third_party, vendor, external…
+QStringList vendorFolders(const CodeModel &m);
 
 // The references behind a link of a dependency graph, at most `limit`
 QVector<qint32> linkReferences(const CodeModel &m, const DepGraph &g, qint32 link, int limit = 500);

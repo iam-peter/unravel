@@ -2,11 +2,13 @@
 // clang must find its structure, and the analyses its problems.
 
 #include <QFile>
+#include <QProcess>
 #include <QFileInfo>
 #include <QTemporaryDir>
 #include <QTest>
 
 #include "analysis.h"
+#include "history.h"
 #include "indexer.h"
 #include "layout.h"
 #include "project.h"
@@ -194,6 +196,21 @@ private slots:
             QVERIFY(x.instability >= 0 && x.instability <= 1);
             QVERIFY(x.distance >= 0 && x.distance <= 1);
         }
+        // Folded: storage is one node, at the file level too, and links go into it
+        const Analysis::DepGraph files = Analysis::dependencyGraph(m, Analysis::Level::File, 0, false, {}, {QStringLiteral("storage")});
+        const qint32 folder = qint32(files.folder.indexOf(QStringLiteral("storage")));
+        QVERIFY(folder >= 0);
+        QCOMPARE(files.folder.count(QStringLiteral("storage")), 1);
+        for (const QString &name : files.names)
+            QVERIFY2(!name.startsWith(QLatin1String("storage/")), qPrintable(name));
+        const qint32 inventory = qint32(files.names.indexOf(QStringLiteral("core/inventory.cpp")));
+        QVERIFY(files.linkIndex(inventory, folder) >= 0);
+        const Analysis::DepGraph foldedClasses = Analysis::dependencyGraph(m, Analysis::Level::Class, 0, false, {}, {QStringLiteral("storage")});
+        QVERIFY(!foldedClasses.names.contains(QStringLiteral("wh::CsvStore")));
+        QVERIFY(foldedClasses.folder.contains(QStringLiteral("storage")));
+        QCOMPARE(Analysis::foldedFolderOf(QStringLiteral("storage/sub"), {QStringLiteral("storage")}), QStringLiteral("storage"));
+        QCOMPARE(Analysis::foldedFolderOf(QStringLiteral("storagex"), {QStringLiteral("storage")}), QString());
+
         const Analysis::DepGraph classes = Analysis::dependencyGraph(m, Analysis::Level::Class);
         QVERIFY(classes.names.contains(QStringLiteral("wh::Inventory")));
         QVERIFY(!Analysis::linkReferences(m, g, g.linkIndex(core, storage)).isEmpty());
@@ -272,6 +289,77 @@ private slots:
         QVERIFY(!reported(Analysis::FindingKind::Unused, QStringLiteral("INNER_MACRO")));
         for (const Analysis::Finding &f : r.findings)
             QVERIFY2(f.kind != Analysis::FindingKind::OrphanFile, qPrintable(f.title));
+    }
+
+    // Commits mapped to the symbols they changed, through later commits that
+    // moved the lines, and what isn't committed yet
+    void history()
+    {
+        QTemporaryDir dir;
+        auto write = [&](const QString &name, const QByteArray &text) {
+            QFile f(dir.filePath(name));
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write(text);
+        };
+        auto git = [&](const QStringList &args) {
+            QProcess p;
+            p.setWorkingDirectory(dir.path());
+            p.start(QStringLiteral("git"), QStringList{QStringLiteral("-c"), QStringLiteral("user.name=t"), QStringLiteral("-c"),
+                                                     QStringLiteral("user.email=t@t"), QStringLiteral("-c"),
+                                                     QStringLiteral("commit.gpgsign=false")} + args);
+            QVERIFY(p.waitForFinished());
+            QCOMPARE(p.exitCode(), 0);
+        };
+        git({QStringLiteral("init"), QStringLiteral("-q")});
+        write(QStringLiteral("a.h"), "#pragma once\nclass Foo {\npublic:\n    int bar();\n    int baz();\n    int count = 0;\n};\n");
+        write(QStringLiteral("a.cpp"), "#include \"a.h\"\n\nint Foo::bar()\n{\n    return 1;\n}\n\nint Foo::baz()\n{\n    return 2;\n}\n");
+        git({QStringLiteral("add"), QStringLiteral(".")});
+        git({QStringLiteral("commit"), QStringLiteral("-qm"), QStringLiteral("one")});
+        // Two: bar's body changes, a new function at the end
+        write(QStringLiteral("a.cpp"), "#include \"a.h\"\n\nint Foo::bar()\n{\n    return count + 1;\n}\n\nint Foo::baz()\n{\n    return 2;\n}\n\n"
+                                      "int helper()\n{\n    return 3;\n}\n");
+        git({QStringLiteral("commit"), QStringLiteral("-qam"), QStringLiteral("two")});
+        // Three: lines at the top move everything down
+        write(QStringLiteral("a.cpp"), "// A file\n// with a header\n\n#include \"a.h\"\n\nint Foo::bar()\n{\n    return count + 1;\n}\n\n"
+                                      "int Foo::baz()\n{\n    return 2;\n}\n\nint helper()\n{\n    return 3;\n}\n");
+        git({QStringLiteral("commit"), QStringLiteral("-qam"), QStringLiteral("three")});
+        // Not committed: baz
+        write(QStringLiteral("a.cpp"), "// A file\n// with a header\n\n#include \"a.h\"\n\nint Foo::bar()\n{\n    return count + 1;\n}\n\n"
+                                      "int Foo::baz()\n{\n    return 4;\n}\n\nint helper()\n{\n    return 3;\n}\n");
+
+        const QString repo = History::repositoryRoot(dir.path());
+        QCOMPARE(QFileInfo(repo).canonicalFilePath(), QFileInfo(dir.path()).canonicalFilePath());
+        const QVector<History::Commit> log = History::log(repo);
+        QCOMPARE(log.size(), 3);
+        QCOMPARE(log.first().subject, QStringLiteral("three"));
+
+        ProjectSetup setup = Project::discover(repo);
+        CodeModel h;
+        QVERIFY(Indexer::run(setup, h).ok);
+        auto names = [&](const QStringList &commits) {
+            const History::Mapping map = History::touchedSymbols(h, History::changes(repo, commits, log));
+            QStringList out;
+            for (const History::Touched &t : map.symbols)
+                out << h.displayName(t.symbol) + (t.added ? QStringLiteral(" +") : QString());
+            out.sort();
+            return out;
+        };
+        // "two", seen through "three"'s shift
+        QCOMPARE(names({log[1].hash}), (QStringList{QStringLiteral("Foo::bar"), QStringLiteral("helper +")}));
+        QCOMPARE(names({History::kWorkingTree}), QStringList{QStringLiteral("Foo::baz")});
+        // "one" made everything
+        const QStringList all = names({log[2].hash});
+        QVERIFY(all.contains(QStringLiteral("Foo +")));
+        QVERIFY(all.contains(QStringLiteral("Foo::count +")));
+
+        // Line mapping through hunks
+        const QVector<History::Hunk> hunks = {{0, 0, 1, 3}, {5, 1, 8, 2}};   // 3 lines at the top, line 5 became 2
+        QCOMPARE(History::mapLine(hunks, 1), 4);
+        QCOMPARE(History::mapLine(hunks, 4), 7);
+        bool changed = false;
+        QCOMPARE(History::mapLine(hunks, 5, &changed), 8);
+        QVERIFY(changed);
+        QCOMPARE(History::mapLine(hunks, 6), 10);
     }
 
     void cleanArguments()

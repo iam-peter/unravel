@@ -34,6 +34,7 @@ Item {
                 Switch { id: byKind; text: qsTr("Colour by kind"); font: Theme.smallFont
                     ToolTip.visible: hovered; ToolTip.text: qsTr("Otherwise green at the user, red at what is used") }
                 KindToggles { id: kinds }
+                FoldMenu {}
                 Item { Layout.fillWidth: true }
                 Label {
                     text: qsTr("%1 nodes · %2 links").arg(bundles.leafCount).arg(bundles.linkCount)
@@ -63,7 +64,8 @@ Item {
                 TapHandler {
                     onTapped: point => {
                         const it = bundles.itemAt(point.position.x, point.position.y)
-                        if (it.symbol !== undefined && it.symbol >= 0) Session.activate(it.symbol)
+                        if (it.folder !== undefined) Session.unfold(it.folder)
+                        else if (it.symbol !== undefined && it.symbol >= 0) Session.activate(it.symbol)
                         else if (it.file !== undefined && it.file >= 0) Session.activateFile(it.file, 0)
                     }
                 }

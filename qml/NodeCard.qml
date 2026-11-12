@@ -27,32 +27,30 @@ Rectangle {
     height: d.h
     radius: Theme.radius
     color: isBundle ? Theme.card
+         : d.kind === -4 ? Qt.tint(Theme.card, Styles.Primitives.alpha(Theme.namespaceColor, 0.22))
          : d.kind === -3 ? Qt.tint(Theme.card, Styles.Primitives.alpha(Theme.namespaceColor, 0.06 + 0.22 * (d.sizeFraction || 0)))
          : Theme.nodeFill(d.kind, d.center === true || d.active === true)
-    border.width: d.center || d.target || hot || d.cyclic ? 2 : 1
+    border.width: d.center || d.target || hot || d.cyclic || d.changed ? 2 : 1
     border.color: d.cyclic ? Theme.danger
+                : d.added ? Theme.added
+                : d.changed ? Theme.changed
                 : d.target ? Theme.success
                 : d.center ? Theme.accent
                 : hot ? Theme.text
                 : Styles.Primitives.alpha(Theme.kindColor(d.kind), 0.7)
-    opacity: d.external ? 0.78 : 1
+    opacity: d.context ? 0.62 : d.external ? 0.78 : 1
 
-    // Hatching for what isn't in the indexed sources, as Sourcetrail does
-    Canvas {
+    // Hatching for what isn't in the indexed sources, as Sourcetrail does: a
+    // tiled texture, drawn by the GPU
+    Image {
         anchors.fill: parent
+        anchors.margins: 1
         visible: card.d.external === true
-        onPaint: {
-            const ctx = getContext("2d")
-            ctx.clearRect(0, 0, width, height)
-            ctx.strokeStyle = Styles.Primitives.alpha(Theme.textMuted, 0.18)
-            ctx.lineWidth = 1
-            ctx.beginPath()
-            for (let x = -height; x < width; x += 8) {
-                ctx.moveTo(x, height)
-                ctx.lineTo(x + height, 0)
-            }
-            ctx.stroke()
-        }
+        source: "qrc:/qt/qml/Unravel/images/hatch.svg"
+        fillMode: Image.Tile
+        sourceSize: Qt.size(8, 8)
+        opacity: 0.35
+        smooth: false
     }
 
     HoverHandler {
@@ -61,6 +59,10 @@ Rectangle {
     }
 
     function activateNode() {
+        if (d.folder !== undefined && d.folder !== "") {
+            Session.unfold(d.folder)   // a folded folder opens again
+            return
+        }
         if (isBundle) {
             if (scene && scene.expandSide)
                 scene.expandSide(d.side)
@@ -122,6 +124,15 @@ Rectangle {
                     HoverHandler { id: hiddenHover }
                 }
                 Label {
+                    visible: (card.d.changedLines || 0) > 0 && card.d.changed === true
+                    text: (card.d.added ? "+" : "±") + card.d.changedLines
+                    font: Theme.smallFont
+                    color: card.d.added ? Theme.added : Theme.changed
+                    ToolTip.visible: changedHover.hovered
+                    ToolTip.text: qsTr("%n lines changed in the selected commits", "", card.d.changedLines || 0)
+                    HoverHandler { id: changedHover }
+                }
+                Label {
                     visible: card.d.complexity !== undefined && card.d.complexity >= 10
                     text: "cc " + card.d.complexity
                     font: Theme.smallFont
@@ -177,6 +188,15 @@ Rectangle {
             }
             TapHandler { onTapped: Session.activate(rowItem.modelData.symbol) }
             TapHandler { acceptedButtons: Qt.RightButton; onTapped: { menu.target = rowItem.modelData.symbol; menu.popup() } }
+            // Changed in the selected commits: a bar on the left
+            Rectangle {
+                visible: rowItem.modelData.changed === true
+                width: 3
+                height: parent.height - 4
+                y: 2
+                radius: 1.5
+                color: rowItem.modelData.added ? Theme.added : Theme.changed
+            }
             RowLayout {
                 anchors.fill: parent
                 anchors.leftMargin: 6
@@ -191,11 +211,18 @@ Rectangle {
                 Label {
                     Layout.fillWidth: true
                     text: rowItem.modelData.name
+                    opacity: rowItem.modelData.changed === false ? 0.6 : 1
                     elide: Text.ElideRight
                     font.italic: rowItem.modelData.virtual === true
                     font.strikeout: rowItem.modelData.unused === true
                     font.underline: rowItem.modelData["static"] === true
                     color: rowItem.modelData.external ? Theme.textMuted : Theme.text
+                }
+                Label {
+                    visible: (rowItem.modelData.lines || 0) > 0
+                    text: (rowItem.modelData.added ? "+" : "±") + rowItem.modelData.lines
+                    font.pixelSize: 10
+                    color: rowItem.modelData.added ? Theme.added : Theme.changed
                 }
             }
             ToolTip.visible: rowHover.hovered
@@ -214,6 +241,7 @@ Rectangle {
         property int target: -1
         onClosed: target = -1
         readonly property int sym: target >= 0 ? target : card.d.symbol
+        readonly property int foldAt: 6   // where the fold entries go
         MenuItem { text: qsTr("Show"); enabled: menu.sym >= 0 || card.d.file >= 0; onTriggered: menu.sym >= 0 ? Session.activate(menu.sym) : Session.activateFile(card.d.file, 0) }
         MenuItem {
             text: qsTr("Open in editor")
@@ -225,6 +253,29 @@ Rectangle {
         }
         MenuItem { text: qsTr("Copy name"); onTriggered: Session.copyToClipboard(menu.sym >= 0 ? Session.symbolInfo(menu.sym).qualified : card.d.title) }
         MenuSeparator {}
+        // Folding: this node's folder and those above it, or unfolding it
+        MenuItem {
+            visible: card.d.folder !== undefined && card.d.folder !== ""
+            height: visible ? implicitHeight : 0
+            text: qsTr("Unfold %1").arg(card.d.folder || "")
+            onTriggered: Session.unfold(card.d.folder)
+        }
+        MenuItem {
+            visible: (card.d.module || "") !== ""
+            height: visible ? implicitHeight : 0
+            text: qsTr("Fold %1 into one node").arg(card.d.module || "")
+            onTriggered: Session.fold(card.d.module)
+        }
+        Instantiator {
+            model: menu.visible ? Session.foldersOfFile(menu.sym >= 0 ? Session.symbolInfo(menu.sym).file : card.d.file) : []
+            delegate: MenuItem {
+                required property string modelData
+                text: qsTr("Fold %1 into one node").arg(modelData)
+                onTriggered: Session.fold(modelData)
+            }
+            onObjectAdded: (index, object) => menu.insertItem(menu.foldAt + index, object)
+            onObjectRemoved: (index, object) => menu.removeItem(object)
+        }
         MenuItem { text: qsTr("Hide"); enabled: menu.sym >= 0 && card.scene !== null; onTriggered: card.scene.hide(menu.sym) }
         MenuItem { text: qsTr("Show hidden again"); enabled: card.scene && card.scene.hiddenSymbols.length > 0; onTriggered: card.scene.unhideAll() }
     }

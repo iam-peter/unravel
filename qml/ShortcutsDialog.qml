@@ -22,7 +22,9 @@ Dialog {
             model: [
                 ["Ctrl+K", qsTr("Search symbols and files (Tab: next category)")],
                 ["Alt+Left / Alt+Right", qsTr("Back / forward through the symbols you looked at")],
-                ["Ctrl+1 … Ctrl+8", qsTr("Graph, flow, architecture, matrix, bundles, treemap, metrics, review")],
+                [qsTr("Mouse thumb buttons"), qsTr("Back / forward, as in a browser")],
+                ["Ctrl+1 … Ctrl+9", qsTr("Graph, flow, architecture, matrix, bundles, treemap, metrics, review, changes")],
+                ["Click, Ctrl, Shift", qsTr("Changes: pick one commit, add or remove one, pick a range")],
                 ["Click", qsTr("A node, a member, a name in the code: make it the active symbol")],
                 ["Click an edge", qsTr("The references behind it")],
                 ["Right-click a node", qsTr("Open in the editor, copy the name, hide it")],
