@@ -10,6 +10,11 @@ find_package(Qt6 6.9 REQUIRED COMPONENTS Core Gui Qml Quick QuickControls2 Svg C
 qt_standard_project_setup(REQUIRES 6.8)
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+if(MSVC)
+    # The sources are UTF-8 (arrows and dashes in strings); the indexer is big
+    add_compile_options(/utf-8 /bigobj /permissive- /Zc:__cplusplus)
+    add_compile_definitions(NOMINMAX _CRT_SECURE_NO_WARNINGS)
+endif()
 # Lay QML modules out by URI so qmllint and qmlls find them (as igitt does)
 set(QT_QML_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/qml)
 
@@ -40,6 +45,23 @@ add_library(libclang UNKNOWN IMPORTED)
 set_target_properties(libclang PROPERTIES
     IMPORTED_LOCATION ${LIBCLANG_LIBRARY}
     INTERFACE_INCLUDE_DIRECTORIES ${LIBCLANG_INCLUDE_DIR})
+# On Windows the import library is in lib, the DLL in bin: copied next to
+# the programs, so they and the tests start from the build folder
+if(WIN32)
+    get_filename_component(_llvm_prefix "${LIBCLANG_INCLUDE_DIR}" DIRECTORY)
+    find_file(LIBCLANG_DLL NAMES libclang.dll PATHS "${_llvm_prefix}/bin" NO_DEFAULT_PATH)
+endif()
+# with clang's own headers in lib/clang, where the indexer looks for them
+function(unravel_copy_libclang target)
+    if(LIBCLANG_DLL)
+        add_custom_command(TARGET ${target} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${LIBCLANG_DLL}" "$<TARGET_FILE_DIR:${target}>")
+        if(EXISTS "${_llvm_prefix}/lib/clang")
+            add_custom_command(TARGET ${target} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_directory "${_llvm_prefix}/lib/clang" "$<TARGET_FILE_DIR:${target}>/lib/clang")
+        endif()
+    endif()
+endfunction()
 
 # --- The engine: no GUI ------------------------------------------------------
 # The Python indexer runs with the system's python3; it is compiled in as text
@@ -74,6 +96,7 @@ set_target_properties(unravel_core PROPERTIES AUTOMOC OFF)
 qt_add_executable(unravel-cli src/cli.cpp)
 target_link_libraries(unravel-cli PRIVATE unravel_core)
 set_target_properties(unravel-cli PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+unravel_copy_libclang(unravel-cli)
 
 if(NOT UNRAVEL_CORE_ONLY)
     # The controls' style and the themes, taken unchanged from igitt as Cache
@@ -85,9 +108,17 @@ if(NOT UNRAVEL_CORE_ONLY)
     target_compile_definitions(unravel PRIVATE PROJECT_VERSION_STRING="${PROJECT_VERSION}")
     set_target_properties(unravel PROPERTIES
         MACOSX_BUNDLE_BUNDLE_NAME Unravel
-        MACOSX_BUNDLE_GUI_IDENTIFIER io.github.unravel
+        MACOSX_BUNDLE_GUI_IDENTIFIER io.github.iam-peter.unravel
         MACOSX_BUNDLE_BUNDLE_VERSION ${PROJECT_VERSION}
-        MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION})
+        MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION}
+        MACOSX_BUNDLE_ICON_FILE unravel.icns)
+    if(WIN32)
+        target_sources(unravel PRIVATE logo/unravel.rc)
+    elseif(APPLE)
+        target_sources(unravel PRIVATE logo/unravel.icns)
+        set_source_files_properties(logo/unravel.icns PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
+    endif()
+    unravel_copy_libclang(unravel)
 
     file(GLOB icon_files RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} CONFIGURE_DEPENDS icons/*.svg)
     set_source_files_properties(qml/Theme.qml qml/Icons.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
@@ -163,7 +194,7 @@ if(NOT UNRAVEL_CORE_ONLY)
         Qt6::Svg)
 
     include(GNUInstallDirs)
-    install(TARGETS unravel BUNDLE DESTINATION . RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+    install(TARGETS unravel unravel-cli BUNDLE DESTINATION . RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
     if(UNIX AND NOT APPLE)
         install(FILES logo/unravel.desktop DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
         install(FILES logo/unravel.svg DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps)

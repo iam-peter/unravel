@@ -1,9 +1,11 @@
 [Desktop Entry]
 Type=Application
 Name=Unravel
-GenericName=C/C++ Code Explorer
-Comment=See the architecture, flows and connections of C and C++ code
+GenericName=Code Explorer
+Comment=See the architecture, flows and connections of C, C++ and Python code
 Exec=unravel %f
 Icon=unravel
 Terminal=false
 Categories=Development;IDE;
+Keywords=c++;clang;python;architecture;dependencies;call graph;review;
+StartupWMClass=unravel

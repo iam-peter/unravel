@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Unravel</title>
+<meta name="description" content="See the architecture, flows and connections of C, C++ and Python code: graphs, call flows, layered architecture, dependency matrices, edge bundles and a review of cycles, duplicates and dead code. Built on clang. Free and open source.">
+<meta property="og:title" content="Unravel – see how code hangs together">
+<meta property="og:description" content="Graphs, call flows, architecture and a review of C, C++ and Python code, built on clang. For understanding code you didn't write yourself.">
+<meta property="og:image" content="https://iam-peter.github.io/unravel/graph.png">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+<script src="theme.js"></script>
+</head>
+<body>
+
+<nav>
+  <div class="wrap">
+    <a class="brand" href="./"><img src="unravel.svg" alt=""> Unravel</a>
+    <div class="links">
+      <a href="#download">Download</a>
+      <a href="#installation">Installation</a>
+      <a href="#questions">Questions</a>
+      <a href="https://github.com/iam-peter/unravel">GitHub</a>
+    </div>
+    <button class="theme-switch" id="theme-switch" type="button" aria-label="Dark theme">
+      <svg class="moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" /></svg>
+      <svg class="sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4" /> <path d="M12 2v2" /> <path d="M12 20v2" /> <path d="m4.93 4.93 1.41 1.41" /> <path d="m17.66 17.66 1.41 1.41" /> <path d="M2 12h2" /> <path d="M20 12h2" /> <path d="m6.34 17.66-1.41 1.41" /> <path d="m19.07 4.93-1.41 1.41" /></svg>
+    </button>
+  </div>
+</nav>
+
+<main class="wrap">
+  <header class="hero">
+    <h1>See how code hangs together</h1>
+    <p class="tagline">The architecture, flows and connections of C, C++ and Python code: what a class is made of
+      and what it touches, how control flows from <code>main</code>, which modules lean on which, and where the
+      cycles, duplicates and dead code are. For reviewing code you didn't write yourself, especially code an
+      assistant wrote. Free, open source, all on your computer.</p>
+    <div class="buttons">
+      <a class="button primary" id="hero-download" href="#download">Download</a>
+      <a class="button" href="https://github.com/iam-peter/unravel">Source code</a>
+    </div>
+    <p class="release-info" id="release-info"></p>
+    <img class="shot" src="graph.png" width="1560" height="940"
+         alt="The graph of a class in Unravel: what uses it on the left, what it uses on the right, its base class above, its code beside it">
+  </header>
+
+  <section id="features">
+    <h2>Features</h2>
+    <p class="lead">clang does the understanding: every translation unit is parsed exactly as your build compiles it.
+      Unravel keeps every declaration, call, include, inheritance and override, and shows them in views taken from
+      the tools that did this best.</p>
+    <div class="features">
+      <div>
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="16" y="16" width="6" height="6" rx="1"/>
+  <rect x="2" y="16" width="6" height="6" rx="1"/>
+  <rect x="9" y="2" width="6" height="6" rx="1"/>
+  <path d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3"/>
+  <path d="M12 12V8"/></svg>
+        <h3>Graph</h3>
+        <p>A symbol in the middle, its members by access, what uses it on the left, what it uses on the right, bases above and subclasses below. Click an edge for the references behind it.</p>
+      </div>
+      <div>
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="8" height="8" x="3" y="3" rx="2"/>
+  <path d="M7 11v4a2 2 0 0 0 2 2h4"/>
+  <rect width="8" height="8" x="13" y="13" rx="2"/></svg>
+        <h3>Flow</h3>
+        <p>A call tree in the order of the code, with virtual dispatch to every override and recursion marked, and every call path from one function to another.</p>
+      </div>
+      <div>
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83z"/>
+  <path d="M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12"/>
+  <path d="M2 17a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 17"/></svg>
+        <h3>Architecture</h3>
+        <p>Modules, files or classes layered so dependencies sit below what uses them, cycles in red, with Robert C. Martin's coupling metrics and the main-sequence chart.</p>
+      </div>
+      <div>
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.341 6.484A10 10 0 0 1 10.266 21.85"/>
+  <path d="M3.659 17.516A10 10 0 0 1 13.74 2.152"/>
+  <circle cx="12" cy="12" r="3"/>
+  <circle cx="19" cy="5" r="2"/>
+  <circle cx="5" cy="19" r="2"/></svg>
+        <h3>Edge bundles and matrices</h3>
+        <p>Holten's hierarchical edge bundles and a dependency matrix of folders, files and their symbols, as in SolidSX and CPPVis.</p>
+      </div>
+      <div>
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="7" height="7" x="3" y="3" rx="1"/>
+  <rect width="7" height="7" x="14" y="3" rx="1"/>
+  <rect width="7" height="7" x="14" y="14" rx="1"/>
+  <rect width="7" height="7" x="3" y="14" rx="1"/></svg>
+        <h3>Treemap and metrics</h3>
+        <p>Area by lines, colour by complexity, callers, nesting or findings; a sortable table of every function's and class's numbers.</p>
+      </div>
+      <div>
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7V5a2 2 0 0 1 2-2h2"/>
+  <path d="M17 3h2a2 2 0 0 1 2 2v2"/>
+  <path d="M21 17v2a2 2 0 0 1-2 2h-2"/>
+  <path d="M7 21H5a2 2 0 0 1-2-2v-2"/>
+  <circle cx="12" cy="12" r="3"/>
+  <path d="m16 16-1.9-1.9"/></svg>
+        <h3>Review</h3>
+        <p>Include and import cycles, duplicated code, possibly unused code, fields written and never read, global state, non-virtual destructors, long and tangled functions. Exported as Markdown.</p>
+      </div>
+      <div>
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/>
+  <line x1="3" x2="9" y1="12" y2="12"/>
+  <line x1="15" x2="21" y1="12" y2="12"/></svg>
+        <h3>Changes</h3>
+        <p>Pick commits and see only the classes and functions they touched, with what uses them and the findings in the change.</p>
+      </div>
+      <div>
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z"/>
+  <path d="M12 22V12"/>
+  <polyline points="3.29 7 12 12 20.71 7"/>
+  <path d="m7.5 4.27 9 5.15"/></svg>
+        <h3>Folding</h3>
+        <p>Third-party code, generated code or a subsystem you aren't reviewing folds into one node; other namespaces fold in the graph until you open them.</p>
+      </div>
+      <div>
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/>
+  <path d="M14 2v5a1 1 0 0 0 1 1h5"/>
+  <path d="M10 12.5 8 15l2 2.5"/>
+  <path d="m14 12.5 2 2.5-2 2.5"/></svg>
+        <h3>C, C++ and Python</h3>
+        <p>Your <code>compile_commands.json</code>, or CMake asked for one, or flags guessed. Python through its own <code>ast</code>, nothing imported or run.</p>
+      </div>
+    </div>
+
+    <div class="split">
+      <div>
+        <h3>Follow the calls</h3>
+        <p>From any function, the calls it makes in the order the code makes them, unfolding on demand, and beside it
+          the same calls as a layered graph to any depth. Virtual calls fan out to every override.</p>
+      </div>
+      <img src="flow.png" width="1560" height="940" loading="lazy"
+           alt="The flow view: a call tree on the left and the layered call graph of the same function on the right">
+    </div>
+
+    <div class="split">
+      <div>
+        <h3>The architecture as it is</h3>
+        <p>Not the one in the design document: folders as modules, layered by what they use, with the cycles that
+          keep them from being understood, built or reused on their own.</p>
+      </div>
+      <img src="architecture.png" width="1560" height="940" loading="lazy"
+           alt="Modules layered by their dependencies, a cycle between two of them in red, and a table of coupling metrics">
+    </div>
+
+    <div class="split">
+      <div>
+        <h3>What to look at first</h3>
+        <p>The review lists what tends to go wrong in generated code: the same function written twice, helpers
+          nothing calls, state written and never read, functions with too many parameters or branches. Every finding
+          links to its code.</p>
+      </div>
+      <img src="findings.png" width="1560" height="940" loading="lazy"
+           alt="The review: findings grouped by kind with their severity, and the code of the selected one">
+    </div>
+
+    <div class="split">
+      <div>
+        <h3>Python too</h3>
+        <p>Modules become namespaces with their classes, functions and fields; imports, inheritance and the calls
+          that can be resolved become edges, through <code>self</code>, <code>super()</code> and type annotations.
+          A mixed project gets both at once.</p>
+      </div>
+      <img src="python.png" width="1560" height="940" loading="lazy"
+           alt="The graph of a Python class with its callers, its base class and another module folded into one node">
+    </div>
+  </section>
+
+  <section id="download">
+    <h2>Download</h2>
+    <p class="lead" id="download-lead">For Windows, macOS and Linux. Each download brings its own clang.</p>
+    <div class="downloads">
+      <div class="download" data-os="windows">
+        <div><h3>Windows</h3><div class="meta">Windows 10 and 11, 64-bit. Installs without administrator rights.
+          Without installing: <a data-alt="unravel-windows-x64.zip" href="https://github.com/iam-peter/unravel/releases">zip archive</a>.</div></div>
+        <a class="nightly" data-nightly="unravel-windows-x64-setup.exe" href="https://github.com/iam-peter/unravel/releases/tag/nightly">Nightly</a>
+        <a class="button" data-asset="unravel-windows-x64-setup.exe" data-fallback="unravel-windows-x64.zip" data-fallback-label=".zip" href="https://github.com/iam-peter/unravel/releases">Installer</a>
+      </div>
+      <div class="download" data-os="macos">
+        <div><h3>macOS</h3><div class="meta">Apple silicon. Drag it into Applications; on the first start choose “Open Anyway” under System Settings › Privacy &amp; Security.</div></div>
+        <a class="nightly" data-nightly="unravel-macos.dmg" href="https://github.com/iam-peter/unravel/releases/tag/nightly">Nightly</a>
+        <a class="button" data-asset="unravel-macos.dmg" href="https://github.com/iam-peter/unravel/releases">.dmg</a>
+      </div>
+      <div class="download" data-os="linux">
+        <div><h3>Linux</h3><div class="meta">AppImage for any distribution.</div></div>
+        <a class="nightly" data-nightly="unravel-linux-x64.AppImage" href="https://github.com/iam-peter/unravel/releases/tag/nightly">Nightly</a>
+        <a class="button" data-asset="unravel-linux-x64.AppImage" href="https://github.com/iam-peter/unravel/releases">.AppImage</a>
+      </div>
+      <div class="download" data-os="debian">
+        <div><h3>Debian / Ubuntu</h3><div class="meta">Package with its own Qt and clang: <code>sudo apt install ./unravel-linux-x64.deb</code></div></div>
+        <a class="nightly" data-nightly="unravel-linux-x64.deb" href="https://github.com/iam-peter/unravel/releases/tag/nightly">Nightly</a>
+        <a class="button" data-asset="unravel-linux-x64.deb" href="https://github.com/iam-peter/unravel/releases">.deb</a>
+      </div>
+    </div>
+    <p class="note">The nightly is built every night from the newest code.
+      Every version is on <a href="https://github.com/iam-peter/unravel/releases">GitHub</a>.
+      To build it yourself you need Qt 6.9 or newer and libclang 17 or newer; see the
+      <a href="https://github.com/iam-peter/unravel#building">README</a>.</p>
+  </section>
+
+  <section id="installation">
+    <h2>Installation</h2>
+    <p class="lead">Step by step for your system. Unravel reads your code where it is and keeps its indexes in a cache
+      folder of its own; it never changes a project.</p>
+
+    <details class="guide" data-os="windows">
+      <summary>Windows 10 and 11</summary>
+      <h3>Install</h3>
+      <ol>
+        <li>Download the <strong>installer</strong> (<code>unravel-windows-x64-setup.exe</code>) above and double-click it.</li>
+        <li>Windows says “Windows protected your PC”, because the program isn't digitally signed yet. Click <strong>More info</strong>, then <strong>Run anyway</strong>.</li>
+        <li>Choose who to install for: <strong>only you</strong> (recommended, no administrator rights) or every user of the computer (asks for an administrator).</li>
+        <li>The boxes <strong>Start menu entry</strong> and <strong>Create a desktop shortcut</strong> are ticked; untick what you don't want, then <strong>Install</strong>.</li>
+        <li>Unravel starts at the end. Open a project folder or a <code>compile_commands.json</code>.</li>
+      </ol>
+      <p>clang needs the C++ standard library's headers, which come with <strong>Visual Studio</strong> or its free
+        <strong>Build Tools</strong> (“Desktop development with C++”). With MinGW projects, their compilation database
+        points clang at MinGW's.</p>
+      <h3>Update and remove</h3>
+      <p>Run the installer of the new version; it replaces the old one. To remove it: Windows Settings › <strong>Apps</strong> › Installed apps › Unravel › <strong>Uninstall</strong>.</p>
+      <p class="note">Without installing: unzip the zip archive and start <code>unravel.exe</code>. <code>unravel-cli.exe</code> beside it writes the review from a terminal.</p>
+    </details>
+
+    <details class="guide" data-os="macos">
+      <summary>macOS (Apple silicon)</summary>
+      <p>Unravel isn't notarised by Apple yet (that costs a yearly fee), so macOS blocks its first start. Once allowed, it starts normally from then on.</p>
+      <h3>Install</h3>
+      <ol>
+        <li>Download <code>unravel-macos.dmg</code> above and double-click it.</li>
+        <li>Drag <strong>Unravel</strong> from the window into the <strong>Applications</strong> folder, then eject the “Unravel” drive in the Finder's sidebar.</li>
+        <li>Double-click Unravel in Applications. macOS says it can't be opened because Apple couldn't check it for malicious software. Click <strong>Done</strong>, <em>not</em> “Move to Bin”.</li>
+        <li>Open <strong>System Settings</strong> › <strong>Privacy &amp; Security</strong> and scroll down to <strong>Security</strong>, where it says “Unravel” was blocked. Click <strong>Open Anyway</strong>. The button shows only for a while after the attempt; if it's missing, repeat step 3.</li>
+        <li>Confirm with your password or Touch ID and choose <strong>Open Anyway</strong> once more. From now on a double-click is enough.</li>
+      </ol>
+      <p>The system's headers come from the Xcode command line tools: <code>xcode-select --install</code> if you don't have Xcode.</p>
+      <p class="note">For the experienced: instead of steps 3 to 5, <code>xattr -dr com.apple.quarantine /Applications/Unravel.app</code> in the Terminal lifts the block for this app.</p>
+    </details>
+
+    <details class="guide" data-os="linux">
+      <summary>Linux</summary>
+      <h3>AppImage (any distribution)</h3>
+      <ol>
+        <li>Download <code>unravel-linux-x64.AppImage</code> and put it somewhere for good, for example <code>~/Applications</code>.</li>
+        <li>Make it executable: in the file manager under Properties › Permissions, or in a terminal with <code>chmod +x unravel-linux-x64.AppImage</code>.</li>
+        <li>Double-click it, or start it with a project: <code>./unravel-linux-x64.AppImage path/to/project</code>. If it mentions FUSE, add <code>--appimage-extract-and-run</code>, or take the <code>.deb</code> on Debian and Ubuntu.</li>
+      </ol>
+      <h3>Debian and Ubuntu</h3>
+      <p><code>sudo apt install ./unravel-linux-x64.deb</code> installs it with an entry in the application menu and
+        <code>unravel</code> and <code>unravel-cli</code> on the path; a new version installs the same way. Remove it with <code>sudo apt remove unravel</code>.</p>
+      <p>The standard library's headers come with your compiler (<code>g++</code> or <code>clang</code>), which a machine that builds the code has anyway.</p>
+    </details>
+  </section>
+
+  <section id="questions">
+    <h2>Questions</h2>
+    <details>
+      <summary>What does Unravel cost?</summary>
+      <p>Nothing. It is open source under the MIT license and free to use and pass on.</p>
+    </details>
+    <details>
+      <summary>Does my code leave my computer?</summary>
+      <p>No. Unravel parses it with the clang it brings, keeps the index in its cache folder and sends nothing anywhere. It runs <code>git</code> for the Changes view, <code>cmake</code> to get a compilation database and <code>python3</code> to read Python files, all on your computer.</p>
+    </details>
+    <details>
+      <summary>What does it need from my project?</summary>
+      <p>Best a <code>compile_commands.json</code> (CMake with <code>-DCMAKE_EXPORT_COMPILE_COMMANDS=ON</code>, Meson, or <code>bear -- make</code>), so clang compiles every file as your build does. For a CMake project without one Unravel asks CMake; otherwise it guesses the include paths, and the review lists where the guess was wrong.</p>
+    </details>
+    <details>
+      <summary>How big a project can it take?</summary>
+      <p>Indexing runs on all cores and is kept, so the next start is instant. Qt's own QtCore, with its thousands of files, takes about a minute; the views stay fluid because everything is drawn on the GPU.</p>
+    </details>
+    <details>
+      <summary>Is “possibly unused” safe to delete?</summary>
+      <p>Not blindly. What clang can't see, Unravel can't: calls from QML, scripts, other programs, through function pointers stored at run time or behind <code>#if</code>s the build doesn't take. In Python, anything reached through <code>getattr</code> or a decorator. It is a list to check.</p>
+    </details>
+    <details>
+      <summary>Windows or macOS warns at the start. Is that dangerous?</summary>
+      <p>The program isn't digitally signed (yet), so Windows SmartScreen warns and macOS blocks the first start. The <a href="#installation">installation guide</a> shows how to start it anyway. The source code is public.</p>
+    </details>
+    <details>
+      <summary>Something is missing or doesn't work.</summary>
+      <p>Ideas and problems are welcome as an <a href="https://github.com/iam-peter/unravel/issues">issue on GitHub</a>.</p>
+    </details>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>MIT license</span>
+    <a href="https://github.com/iam-peter/unravel">GitHub</a>
+    <a href="notices.html">Notices</a>
+  </div>
+</footer>
+
+<script>
+  const repo = "iam-peter/unravel";
+  const base = `https://github.com/${repo}/releases`;
+
+  function detectOs() {
+    const p = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || navigator.userAgent;
+    if (/win/i.test(p)) return "windows";
+    if (/mac|iphone|ipad/i.test(p)) return "macos";
+    if (/linux|x11/i.test(p)) return /ubuntu|debian/i.test(navigator.userAgent) ? "debian" : "linux";
+    return "windows";
+  }
+
+  const labels = { windows: "for Windows", macos: "for macOS", linux: "for Linux", debian: "for Debian/Ubuntu" };
+  const os = detectOs();
+  // The installation guide opens at the visitor's system
+  const guideOs = os === "debian" ? "linux" : os;
+  for (const guide of document.querySelectorAll(".guide"))
+    guide.open = guide.dataset.os === guideOs;
+  for (const row of document.querySelectorAll(".download")) {
+    const current = row.dataset.os === os;
+    row.classList.toggle("current", current);
+    row.querySelector("[data-asset]").classList.toggle("primary", current);
+  }
+
+  function date(iso) {
+    return new Date(iso).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" });
+  }
+
+  fetch(`https://api.github.com/repos/${repo}/releases?per_page=30`,
+        { headers: { Accept: "application/vnd.github+json" } })
+    .then(response => response.ok ? response.json() : Promise.reject(response.status))
+    .then(list => {
+      const stable = list.find(r => !r.draft && !r.prerelease);
+      const nightly = list.find(r => r.tag_name === "nightly");
+      const has = (release, name) => release && release.assets.some(a => a.name === name);
+
+      // The stable release, the nightly until there is one
+      const main = stable || nightly;
+      for (const link of document.querySelectorAll("[data-asset]")) {
+        let name = link.dataset.asset;
+        if (!has(main, name) && link.dataset.fallback && has(main, link.dataset.fallback)) {
+          name = link.dataset.fallback;
+          link.textContent = link.dataset.fallbackLabel;
+        }
+        if (has(main, name)) {
+          link.href = `${base}/download/${main.tag_name}/${name}`;
+          link.dataset.found = "true";
+        }
+      }
+      for (const link of document.querySelectorAll("[data-alt]")) {
+        if (has(main, link.dataset.alt))
+          link.href = `${base}/download/${main.tag_name}/${link.dataset.alt}`;
+      }
+      for (const link of document.querySelectorAll("[data-nightly]")) {
+        if (has(nightly, link.dataset.nightly)) {
+          link.href = `${base}/download/nightly/${link.dataset.nightly}`;
+          link.textContent = `Nightly of ${date(nightly.published_at)}`;
+        } else {
+          link.hidden = true;
+        }
+      }
+
+      const info = document.getElementById("release-info");
+      const hero = document.getElementById("hero-download");
+      const asset = document.querySelector(`.download[data-os="${os}"] [data-asset]`);
+      if (stable) {
+        info.textContent = `Version ${stable.tag_name.replace(/^v/, "")} of ${date(stable.published_at)}`;
+        hero.textContent = `Download ${labels[os]}`;
+        if (asset.dataset.found) hero.href = asset.href;
+      } else if (nightly) {
+        info.textContent = `Preview of ${date(nightly.published_at)}`;
+        document.getElementById("download-lead").textContent =
+          "For Windows, macOS and Linux. So far there is only the preview (nightly).";
+        hero.textContent = `Preview ${labels[os]}`;
+        if (asset.dataset.found) hero.href = asset.href;
+      }
+    })
+    .catch(() => {
+      // Without the API (offline, rate limit) the links lead to the release list.
+    });
+</script>
+</body>
+</html>

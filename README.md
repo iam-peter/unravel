@@ -6,6 +6,10 @@ which modules lean on which, where the cycles, the duplicates and the
 complexity are. Built for reviewing and understanding code you didn't
 write yourself — especially code an assistant wrote.
 
+**[Website](https://iam-peter.github.io/unravel/)** ·
+**[Download](https://github.com/iam-peter/unravel/releases)** ·
+[Nightly](https://github.com/iam-peter/unravel/releases/tag/nightly)
+
 ![The graph of a class: who uses it on the left, what it uses on the right, its code beside it](docs/screenshots/graph.png)
 
 clang does the understanding. Unravel parses every translation unit with
@@ -29,6 +33,34 @@ both front ends at once.
 
 Qt 6 (C++ and Qt Quick), with the controls, themes and fonts of
 [Cache](../cache) and [igitt](../igitt).
+
+## Download
+
+Each [release](https://github.com/iam-peter/unravel/releases) has:
+
+| File | For |
+|---|---|
+| `unravel-windows-x64-setup.exe` | Windows 10/11: installer, no administrator rights needed |
+| `unravel-windows-x64.zip` | Windows 10/11 without installing: unzip, start `unravel.exe` |
+| `unravel-macos.dmg` | macOS on Apple silicon |
+| `unravel-linux-x64.AppImage` | any Linux |
+| `unravel-linux-x64.deb` | Debian and Ubuntu, with its own Qt and clang |
+
+Each brings `unravel-cli` beside the program, its own libclang and clang's own headers (`stddef.h`,
+the intrinsics). The C and C++ standard library comes from a compiler on your system, as it does for
+your build: gcc or clang on Linux, Visual Studio or its Build Tools on Windows, the Xcode command line
+tools on macOS. Python projects need `python3` on the path.
+
+The programs aren't signed: Windows SmartScreen asks once (*More info*, *Run anyway*). macOS blocks
+the first start; then choose *Open Anyway* under System Settings › Privacy & Security. Step-by-step
+guides for every system are on the [website](https://iam-peter.github.io/unravel/#installation).
+
+**Nightly and releases.** Every night with new commits, the [Nightly](.github/workflows/nightly.yml)
+workflow builds and tests on Linux, Windows and macOS, smoke-tests the packages (indexing the sample
+with the clang they bring, and showing the window) and replaces the rolling `nightly` pre-release.
+*Promote Release* (run by hand with a version) turns the current nightly into a stable release with
+the same files. [CI](.github/workflows/ci.yml) builds and tests every push and pull request; the
+[website](pages/) is published from `pages/` by the *Website* workflow.
 
 ## The views
 
@@ -119,8 +151,11 @@ The editor that “open in editor” (Ctrl+E) starts is set in the settings, wit
 ## Building
 
 Requires Qt ≥ 6.9, CMake ≥ 3.21 and libclang from LLVM 17 or newer (`libclang-dev` on Debian and Ubuntu,
-`llvm` from Homebrew, the LLVM installer on Windows). `UNRAVEL_LLVM_ROOT` points CMake at an LLVM it
-doesn't find by itself.
+`llvm` from Homebrew, LLVM's `clang+llvm-…-windows-msvc` archive on Windows). `UNRAVEL_LLVM_ROOT`
+points CMake at an LLVM it doesn't find by itself; on Windows the build copies `libclang.dll` and clang's
+headers next to the programs. A package puts clang's headers beside the program, where the indexer looks
+for them (`lib/clang/<major>`, `../lib/clang/<major>` or `../Resources/clang/<major>`), or
+`UNRAVEL_CLANG_RESOURCE_DIR` names them.
 
 ```bash
 cmake -B build -G Ninja -DCMAKE_PREFIX_PATH=$HOME/Qt/6.12.0/gcc_64
@@ -169,6 +204,10 @@ prints the time per frame.
   matrix)
 - [qml](qml) — the window and the views
 - [style](style) — igitt's Qt Quick Controls style and themes, unchanged, as in Cache
+- [packaging](packaging) — the Debian package, the Windows installer (Inno Setup) and the QML imports
+  the deploy tools need to see; [logo](logo) has the icons per platform
+- [pages](pages) — the website; [.github/workflows](.github/workflows) — CI, the nightly, releases and
+  the website
 
 ## Limits
 
@@ -183,6 +222,12 @@ prints the time per frame.
   exactly one method of the project has that name, `getattr`, monkey patching
   and decorators that replace functions are invisible, and what is imported from outside the project
   stays a name.
+
+## License
+
+MIT, see [LICENSE](LICENSE). Qt is used under the LGPL v3, clang and LLVM under the Apache License 2.0
+with LLVM Exceptions; igitt's style (`style/`) is MIT; Inter and JetBrains Mono are under the SIL Open
+Font License 1.1 and the Lucide icons under the ISC license (their license files are beside them).
 
 ## Credits
 

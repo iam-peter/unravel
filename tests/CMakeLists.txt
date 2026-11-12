@@ -8,4 +8,5 @@ target_link_libraries(tst_core PRIVATE unravel_core Qt6::Test)
 target_compile_definitions(tst_core PRIVATE UNRAVEL_SAMPLE_DIR="${PROJECT_SOURCE_DIR}/samples/warehouse"
                                             UNRAVEL_PYTHON_SAMPLE_DIR="${PROJECT_SOURCE_DIR}/samples/pyshop")
 set_target_properties(tst_core PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+unravel_copy_libclang(tst_core)
 add_test(NAME tst_core COMMAND tst_core -o ${test_output_dir}/tst_core.txt,txt -o -,txt)

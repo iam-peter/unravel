@@ -1,0 +1,66 @@
+# Builds and tests every push and pull request on Linux. The nightly
+# builds all platforms.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      # libclang does the parsing; git and python3 are on the runner
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libgl1-mesa-dev libegl1 libxkbcommon-dev libfontconfig1 \
+            libclang-18-dev
+
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.12.0"
+          host: linux
+          target: desktop
+          arch: linux_gcc_64
+          cache: true
+
+      - name: Build
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+          cmake --build build
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+        env:
+          QT_QPA_PLATFORM: offscreen
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: test-log
+          path: |
+            build/Testing/Temporary/LastTest.log
+            build/test-results/
+          retention-days: 7
+
+      # The review of both samples, and the whole window, in igitt's style,
+      # on the C++ one once it is indexed
+      - name: Start the program
+        run: |
+          build/bin/unravel-cli samples/warehouse --report "$RUNNER_TEMP/warehouse.md"
+          build/bin/unravel-cli samples/pyshop --report "$RUNNER_TEMP/pyshop.md"
+          ! grep -q "^### Parse errors" "$RUNNER_TEMP/warehouse.md"
+          grep -q "modules import each other" "$RUNNER_TEMP/pyshop.md"
+          QT_QPA_PLATFORM=offscreen build/bin/unravel samples/warehouse --grab "$RUNNER_TEMP/window.png"
+          test -s "$RUNNER_TEMP/window.png"

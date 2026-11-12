@@ -1,5 +1,6 @@
 #include "indexer.h"
 
+#include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
 #include <QElapsedTimer>
@@ -7,6 +8,8 @@
 #include <QFileInfo>
 #include <QHash>
 #include <QMutex>
+#include <QProcess>
+#include <QRegularExpression>
 #include <QSet>
 #include <QThread>
 
@@ -1135,6 +1138,60 @@ QVector<QByteArray> toArgv(const QStringList &args)
     return out;
 }
 
+// clang's own headers (stddef.h, the intrinsics) for the libclang that is
+// loaded. libclang looks for them beside itself, which works where LLVM is
+// installed but not where a package put libclang next to the program, so a
+// copy in the package is named explicitly: lib/clang/<major> beside the
+// program (Windows), ../lib/clang/<major> (Linux, the AppImage and the
+// Debian package) or ../Resources/clang/<major> (a macOS bundle). Only
+// one for the same major version as libclang's.
+QString resourceDir()
+{
+    static const QString dir = [] {
+        const QString given = qEnvironmentVariable("UNRAVEL_CLANG_RESOURCE_DIR");
+        if (!given.isEmpty() || !QCoreApplication::instance())
+            return given;
+        CXString version = clang_getClangVersion();
+        const QString text = QString::fromUtf8(clang_getCString(version));
+        clang_disposeString(version);
+        const QRegularExpressionMatch m = QRegularExpression(QStringLiteral("version (\\d+)")).match(text);
+        if (!m.hasMatch())
+            return QString();
+        const QString app = QCoreApplication::applicationDirPath(), major = m.captured(1);
+        for (const QString &c : {app + QStringLiteral("/lib/clang/"), app + QStringLiteral("/../lib/clang/"),
+                                 app + QStringLiteral("/../Resources/clang/")}) {
+            if (QFileInfo::exists(c + major + QStringLiteral("/include/stddef.h")))
+                return QDir::cleanPath(c + major);
+        }
+        return QString();
+    }();
+    return dir;
+}
+
+// What a compiler on this system adds by itself and libclang doesn't: on
+// macOS the SDK, where the C and C++ headers are (clang finds it through
+// xcrun or its configuration files, which libclang reads neither of)
+QStringList platformArguments()
+{
+#ifdef Q_OS_MACOS
+    static const QStringList args = [] {
+        QString sdk = qEnvironmentVariable("SDKROOT");
+        if (sdk.isEmpty()) {
+            QProcess xcrun;
+            xcrun.start(QStringLiteral("xcrun"), {QStringLiteral("--show-sdk-path")});
+            if (xcrun.waitForFinished(10000) && xcrun.exitCode() == 0)
+                sdk = QString::fromLocal8Bit(xcrun.readAllStandardOutput()).trimmed();
+        }
+        if (sdk.isEmpty() && QFileInfo::exists(QStringLiteral("/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk")))
+            sdk = QStringLiteral("/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk");
+        return sdk.isEmpty() ? QStringList() : QStringList{QStringLiteral("-isysroot"), sdk};
+    }();
+    return args;
+#else
+    return {};
+#endif
+}
+
 } // namespace
 
 void Indexer::countLines(const QString &path, qint32 *lines, qint32 *codeLines)
@@ -1234,6 +1291,8 @@ IndexResult Indexer::run(const ProjectSetup &setup, CodeModel &model, std::atomi
     QMutex mutex;
     std::atomic<qint64> waitNs{0}, mergeNs{0}, parseNs{0};
 
+    const QString resources = resourceDir();
+    const QStringList platform = platformArguments();
     auto worker = [&] {
         CXIndex index = clang_createIndex(0, 0);
         CXIndexAction action = clang_IndexAction_create(index);
@@ -1260,8 +1319,12 @@ IndexResult Indexer::run(const ProjectSetup &setup, CodeModel &model, std::atomi
                 unit.config = configs[i];
                 unit.cu = &cu;
                 unit.cancel = cancel;
-                const QStringList args = attempt == 0 ? cu.args : Project::minimalArguments(cu.args)
-                                                                      << QStringLiteral("-ferror-limit=0");
+                QStringList args = attempt == 0 ? cu.args : Project::minimalArguments(cu.args)
+                                                                << QStringLiteral("-ferror-limit=0");
+                if (!resources.isEmpty() && !args.contains(QLatin1String("-resource-dir")))
+                    args << QStringLiteral("-resource-dir") << resources;
+                if (!platform.isEmpty() && !args.contains(platform.first()))
+                    args << platform;
                 const QVector<QByteArray> argv = toArgv(args);
                 std::vector<const char *> ptrs;
                 for (const QByteArray &a : argv)

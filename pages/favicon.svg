@@ -1,0 +1,17 @@
+<!-- The app icon (logo/unravel.svg) without its margin -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="4 4 120 120">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2b2f45"/>
+      <stop offset="1" stop-color="#151827"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="120" height="120" rx="26" fill="url(#bg)"/>
+  <path d="M28 64c0-14 22-22 30-10s-12 26-20 14 14-30 30-20" fill="none" stroke="#f5c451" stroke-width="5" stroke-linecap="round"/>
+  <path d="M68 48c10 0 18 0 32 0" fill="none" stroke="#f5c451" stroke-width="5" stroke-linecap="round"/>
+  <path d="M40 76c10 10 26 6 34 -8M74 68c8 0 16 0 26 0" fill="none" stroke="#7aa8ff" stroke-width="5" stroke-linecap="round"/>
+  <path d="M34 86c14 8 30 8 40 2 8 0 16 0 26 0" fill="none" stroke="#8fd19e" stroke-width="5" stroke-linecap="round"/>
+  <circle cx="100" cy="48" r="7" fill="#f5c451"/>
+  <circle cx="100" cy="68" r="7" fill="#7aa8ff"/>
+  <circle cx="100" cy="88" r="7" fill="#8fd19e"/>
+</svg>
