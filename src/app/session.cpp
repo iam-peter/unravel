@@ -15,6 +15,7 @@
 #include <QtConcurrent>
 
 #include "indexer.h"
+#include "python.h"
 #include "report.h"
 
 using namespace Unravel;
@@ -270,7 +271,9 @@ bool Session::isStale(const CodeModel &m)
             return true;
     }
     // New sources
-    const QStringList now = Project::sourceFiles(m.root, true);
+    QStringList now = Project::sourceFiles(m.root, true);
+    if (!Python::interpreter().isEmpty())
+        now += Python::sourceFiles(m.root);
     for (const QString &p : now) {
         if (m.fileId(p) < 0)
             return true;
@@ -318,15 +321,20 @@ void Session::startIndexing(bool useCache)
             return r;
         }
         r.setup = Project::discover(path, extra, buildDir);
-        if (!r.setup.error.isEmpty() || r.setup.units.isEmpty()) {
+        if (!r.setup.error.isEmpty() || (r.setup.units.isEmpty() && r.setup.pythonFiles.isEmpty())) {
             r.result.error = r.setup.error.isEmpty() ? QStringLiteral("Nothing to index") : r.setup.error;
             return r;
         }
-        const int total = int(r.setup.units.size());
-        QMetaObject::invokeMethod(this, [this, self, total, generation] {
+        const int units = int(r.setup.units.size()), modules = int(r.setup.pythonFiles.size());
+        QMetaObject::invokeMethod(this, [this, self, units, modules, generation] {
             if (self && generation == m_generation) {
                 setState(Indexing);
-                setProgress(0, tr("Indexing %1 translation units…").arg(total));
+                QStringList what;
+                if (units > 0)
+                    what << tr("%1 translation units").arg(units);
+                if (modules > 0)
+                    what << tr("%1 Python files").arg(modules);
+                setProgress(0, tr("Indexing %1…").arg(what.join(tr(" and "))));
             }
         }, Qt::QueuedConnection);
         r.result = Indexer::run(r.setup, *r.model, &m_cancel, [this, self, generation](int done, int all, const QString &file) {
@@ -954,4 +962,15 @@ void Session::foldVendorFolders()
 void Session::unfoldAll()
 {
     setFolded({});
+}
+
+QString Session::namespaceOf(int symbol) const
+{
+    if (!m_model || symbol < 0 || symbol >= m_model->symbols.size())
+        return {};
+    for (qint32 p = m_model->symbols[m_model->nodeOwner(symbol)].parent; p >= 0; p = m_model->symbols[p].parent) {
+        if (m_model->symbols[p].kind == SymbolKind::Namespace)
+            return m_model->displayName(p);
+    }
+    return {};
 }

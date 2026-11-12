@@ -24,6 +24,7 @@ struct ProjectSetup {
     QString database;      // path of compile_commands.json, if any
     Source source = Guessed;
     QList<CompileUnit> units;
+    QStringList pythonFiles;   // read by the Python indexer
     QStringList notes;     // what the discovery did, for the user
     QString error;
 };

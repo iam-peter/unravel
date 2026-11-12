@@ -159,6 +159,8 @@ class SymbolGraph : public GraphScene
     Q_PROPERTY(int maxPerSide READ maxPerSide WRITE setMaxPerSide NOTIFY inputChanged)
     Q_PROPERTY(bool showExternal READ showExternal WRITE setShowExternal NOTIFY inputChanged)
     Q_PROPERTY(QVariantList kindFilter READ kindFilter WRITE setKindFilter NOTIFY inputChanged)
+    // Neighbours in other namespaces as one node per namespace
+    Q_PROPERTY(bool foldNamespaces READ foldNamespaces WRITE setFoldNamespaces NOTIFY inputChanged)
 
 public:
     enum Grouping { NoGrouping, ByNamespace, ByFile };
@@ -180,6 +182,11 @@ public:
     void setShowExternal(bool v);
     QVariantList kindFilter() const;
     void setKindFilter(const QVariantList &kinds);
+    bool foldNamespaces() const { return m_foldNamespaces; }
+    void setFoldNamespaces(bool v);
+    Q_INVOKABLE void openNamespace(const QString &ns);
+    Q_INVOKABLE void closeNamespace(const QString &ns);
+    Q_INVOKABLE bool isNamespaceOpen(const QString &ns) const { return m_openNamespaces.contains(ns); }
     Q_INVOKABLE void expandSide(int side);
 
 signals:
@@ -198,6 +205,8 @@ private:
     bool m_showExternal = true;
     QSet<int> m_kinds;   // RefKinds shown; empty = all
     QSet<int> m_expandedSides;
+    bool m_foldNamespaces = true;
+    QSet<QString> m_openNamespaces;
 };
 
 // Calls as a layered graph: what a function calls and who calls it, to a

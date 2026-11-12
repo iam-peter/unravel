@@ -37,7 +37,7 @@ QString markdown(const CodeModel &m, const Analysis::Report &report, const Optio
     QString out;
     QTextStream t(&out);
     t << "# Code review: " << QFileInfo(m.root).fileName() << "\n\n";
-    t << "Indexed with clang by unravel on "
+    t << "Indexed by unravel (clang for C and C++, Python's ast for Python) on "
       << QDateTime::fromMSecsSinceEpoch(m.indexedAt).toString(QStringLiteral("yyyy-MM-dd hh:mm")) << ". Root: `"
       << m.root << "`.\n\n";
 

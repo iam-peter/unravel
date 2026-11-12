@@ -1363,7 +1363,11 @@ const CodeSnippets::FileText *CodeSnippets::text(int file)
     }
     t.spans = QVector<QVector<QPair<int, int>>>(t.lines.size());
     t.kinds = QVector<QVector<int>>(t.lines.size());
-    const QList<Highlight::Span> spans = Highlight::spans(all, QStringLiteral("cpp"));
+    // The language by the file's suffix: Python, else C or C++
+    const QString suffix = QFileInfo(m_model->files[file].path).suffix().toLower();
+    const QString language = suffix == QLatin1String("py") || suffix == QLatin1String("pyi") ? QStringLiteral("python")
+                                                                                            : QStringLiteral("cpp");
+    const QList<Highlight::Span> spans = Highlight::spans(all, language);
     int line = 0;
     for (const Highlight::Span &sp : spans) {
         qsizetype start = sp.start, end = sp.start + sp.length;

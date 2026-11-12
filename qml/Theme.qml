@@ -54,7 +54,7 @@ QtObject {
     // SymbolKind (src/core/model.h) to a colour; -2 files, -3 folders
     function kindColor(kind) {
         switch (kind) {
-        case -4: return namespaceColor
+        case -5: case -4: return namespaceColor
         case -3: case -2: return fileColor
         case 1: return namespaceColor
         case 2: case 3: case 4: case 5: case 7: case 16: return typeColor
@@ -66,6 +66,7 @@ QtObject {
     }
     function kindIcon(kind) {
         switch (kind) {
+        case -5: return "braces"
         case -4: return "package"
         case -3: return "folder"
         case -2: return "file-code"

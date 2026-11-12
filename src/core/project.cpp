@@ -1,5 +1,6 @@
 #include "project.h"
 #include "model.h"
+#include "python.h"
 
 #include <QDateTime>
 #include <QDir>
@@ -404,6 +405,23 @@ ProjectSetup discover(const QString &path, const QStringList &extraArgs, const Q
                            .arg(sources.size()).arg(includeDirs.size());
         if (sources.isEmpty())
             setup.error = QStringLiteral("No C or C++ sources in %1").arg(setup.root);
+    }
+
+    // Python sources under the root, indexed beside the C and C++ ones
+    if (!setup.root.isEmpty() && setup.root != QLatin1String("/")) {
+        setup.pythonFiles = Python::sourceFiles(setup.root);
+        if (!setup.pythonFiles.isEmpty()) {
+            setup.notes << (Python::interpreter().isEmpty()
+                                ? QStringLiteral("%1 Python files, but no python3 to read them with").arg(setup.pythonFiles.size())
+                                : QStringLiteral("Python: %1 files, read with the standard library's ast").arg(setup.pythonFiles.size()));
+            if (setup.units.isEmpty()) {
+                // Python only: not an error, and no note about missing C sources
+                setup.error.clear();
+                setup.notes.erase(std::remove_if(setup.notes.begin(), setup.notes.end(), [](const QString &n) {
+                                      return n.startsWith(QLatin1String("No compilation database"));
+                                  }), setup.notes.end());
+            }
+        }
     }
 
     for (CompileUnit &u : setup.units) {

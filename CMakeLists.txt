@@ -42,6 +42,19 @@ set_target_properties(libclang PROPERTIES
     INTERFACE_INCLUDE_DIRECTORIES ${LIBCLANG_INCLUDE_DIR})
 
 # --- The engine: no GUI ------------------------------------------------------
+# The Python indexer runs with the system's python3; it is compiled in as text
+set(python_script ${CMAKE_CURRENT_SOURCE_DIR}/src/core/python/unravel_python.py)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${python_script})
+# As bytes: string literals that long don't compile everywhere
+file(READ ${python_script} python_hex HEX)
+string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," python_bytes "${python_hex}")
+file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/generated/unravel_python_script.h.new
+     "#pragma once\n// Made by CMake from src/core/python/unravel_python.py\n"
+     "static const unsigned char kPythonScript[] = {${python_bytes} 0};\n")
+# Only touched when it changed, so nothing is rebuilt for nothing
+configure_file(${CMAKE_CURRENT_BINARY_DIR}/generated/unravel_python_script.h.new
+               ${CMAKE_CURRENT_BINARY_DIR}/generated/unravel_python_script.h COPYONLY)
+
 add_library(unravel_core STATIC
     src/core/model.h src/core/model.cpp
     src/core/project.h src/core/project.cpp
@@ -50,8 +63,10 @@ add_library(unravel_core STATIC
     src/core/layout.h src/core/layout.cpp
     src/core/report.h src/core/report.cpp
     src/core/history.h src/core/history.cpp
+    src/core/python.h src/core/python.cpp
 )
 target_include_directories(unravel_core PUBLIC src/core)
+target_include_directories(unravel_core PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
 target_link_libraries(unravel_core PUBLIC Qt6::Core libclang)
 set_target_properties(unravel_core PROPERTIES AUTOMOC OFF)
 

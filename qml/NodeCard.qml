@@ -27,7 +27,7 @@ Rectangle {
     height: d.h
     radius: Theme.radius
     color: isBundle ? Theme.card
-         : d.kind === -4 ? Qt.tint(Theme.card, Styles.Primitives.alpha(Theme.namespaceColor, 0.22))
+         : d.kind === -4 || d.kind === -5 ? Qt.tint(Theme.card, Styles.Primitives.alpha(Theme.namespaceColor, 0.22))
          : d.kind === -3 ? Qt.tint(Theme.card, Styles.Primitives.alpha(Theme.namespaceColor, 0.06 + 0.22 * (d.sizeFraction || 0)))
          : Theme.nodeFill(d.kind, d.center === true || d.active === true)
     border.width: d.center || d.target || hot || d.cyclic || d.changed ? 2 : 1
@@ -61,6 +61,10 @@ Rectangle {
     function activateNode() {
         if (d.folder !== undefined && d.folder !== "") {
             Session.unfold(d.folder)   // a folded folder opens again
+            return
+        }
+        if (d.namespace !== undefined && scene && scene.openNamespace) {
+            scene.openNamespace(d.namespace)   // so does a folded namespace
             return
         }
         if (isBundle) {
@@ -241,7 +245,7 @@ Rectangle {
         property int target: -1
         onClosed: target = -1
         readonly property int sym: target >= 0 ? target : card.d.symbol
-        readonly property int foldAt: 6   // where the fold entries go
+        readonly property int foldAt: 7   // where the fold entries go
         MenuItem { text: qsTr("Show"); enabled: menu.sym >= 0 || card.d.file >= 0; onTriggered: menu.sym >= 0 ? Session.activate(menu.sym) : Session.activateFile(card.d.file, 0) }
         MenuItem {
             text: qsTr("Open in editor")
@@ -259,6 +263,15 @@ Rectangle {
             height: visible ? implicitHeight : 0
             text: qsTr("Unfold %1").arg(card.d.folder || "")
             onTriggered: Session.unfold(card.d.folder)
+        }
+        MenuItem {
+            // A neighbour in an opened namespace: fold it again
+            readonly property string ns: menu.sym >= 0 ? Session.namespaceOf(menu.sym) : ""
+            visible: card.scene !== null && card.scene.closeNamespace !== undefined && menu.sym >= 0 && !card.d.center
+                     && card.scene.isNamespaceOpen(ns)
+            height: visible ? implicitHeight : 0
+            text: qsTr("Fold %1 again").arg(ns === "" ? qsTr("the global namespace") : ns)
+            onTriggered: card.scene.closeNamespace(ns)
         }
         MenuItem {
             visible: (card.d.module || "") !== ""

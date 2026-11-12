@@ -12,6 +12,8 @@
 
 #include <clang-c/Index.h>
 
+#include "python.h"
+
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -1195,17 +1197,18 @@ IndexResult Indexer::run(const ProjectSetup &setup, CodeModel &model, std::atomi
     shared.rootSlash = withSlash(model.root);
     shared.buildSlash = setup.buildDir.isEmpty() ? QString() : withSlash(setup.buildDir);
 
-    const int total = int(setup.units.size());
+    const int total = int(setup.units.size()) + (setup.pythonFiles.isEmpty() ? 0 : 1);
     if (threads <= 0)
         threads = std::clamp(QThread::idealThreadCount() - 1, 1, 12);   // each holds a parsed unit: ~100 MB with Qt
     threads = std::min(threads, std::max(1, total));
 
     // The preprocessor configuration of each unit: its defines, forced
     // includes and language
-    QVector<QString> configs(total);
+    const int unitCount = int(setup.units.size());
+    QVector<QString> configs(unitCount);
     {
         QHash<QString, QString> ids;
-        for (int i = 0; i < total; ++i) {
+        for (int i = 0; i < unitCount; ++i) {
             QStringList key;
             const QStringList &a = setup.units[i].args;
             for (qsizetype k = 0; k < a.size(); ++k) {
@@ -1239,7 +1242,7 @@ IndexResult Indexer::run(const ProjectSetup &setup, CodeModel &model, std::atomi
             if (cancel && cancel->load())
                 break;
             const int i = next.fetch_add(1);
-            if (i >= total)
+            if (i >= int(setup.units.size()))
                 break;
             const CompileUnit &cu = setup.units[i];
             const QByteArray file = cu.file.toUtf8();
@@ -1333,7 +1336,18 @@ IndexResult Indexer::run(const ProjectSetup &setup, CodeModel &model, std::atomi
     };
 
     std::vector<std::thread> pool;
-    for (int t = 0; t < threads; ++t)
+    // Python: one process for all its files, beside the clang workers
+    bool pythonOk = setup.pythonFiles.isEmpty();
+    QString pythonError;
+    if (!setup.pythonFiles.isEmpty()) {
+        pool.emplace_back([&] {
+            pythonOk = Python::run(model.root, setup.pythonFiles, model, &pythonError, cancel, &mutex);
+            const int n = ++done;
+            if (progress)
+                progress(n, total, QStringLiteral("%1 Python files").arg(setup.pythonFiles.size()));
+        });
+    }
+    for (int t = 0; t < std::min(threads, unitCount); ++t)
         pool.emplace_back(worker);
     for (std::thread &t : pool)
         t.join();
@@ -1360,9 +1374,17 @@ IndexResult Indexer::run(const ProjectSetup &setup, CodeModel &model, std::atomi
         qInfo("index: parse+merge %lld ms (parse cpu %lld ms, merge %lld ms, lock wait %lld ms), files/lines %lld ms, finalize %lld ms",
               tParsed, parseNs.load() / 1000000, mergeNs.load() / 1000000, waitNs.load() / 1000000, tLines - tParsed,
               timer.elapsed() - tLines);
-    result.ok = !result.cancelled && result.units > 0;
+    if (!pythonOk) {
+        Diagnostic d;
+        d.severity = Diagnostic::Error;
+        d.message = pythonError;
+        model.diagnostics.append(d);
+    }
+    result.ok = !result.cancelled && (result.units > int(setup.pythonFiles.isEmpty() ? 0 : 1) || (pythonOk && !setup.pythonFiles.isEmpty()));
     if (total == 0)
         result.error = QStringLiteral("Nothing to index");
+    else if (!result.ok && !pythonError.isEmpty())
+        result.error = pythonError;
     return result;
 }
 

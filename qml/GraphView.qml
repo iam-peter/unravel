@@ -56,6 +56,14 @@ Item {
                     ToolTip.text: qsTr("Show what comes from outside the project (the standard library, Qt…)")
                 }
                 Switch {
+                    text: qsTr("Fold namespaces")
+                    checked: graph.foldNamespaces
+                    onToggled: graph.foldNamespaces = checked
+                    font: Theme.smallFont
+                    ToolTip.visible: hovered
+                    ToolTip.text: qsTr("Neighbours from another namespace as one node per namespace; click one to open it")
+                }
+                Switch {
                     text: qsTr("All members")
                     checked: graph.allMembers
                     onToggled: graph.allMembers = checked

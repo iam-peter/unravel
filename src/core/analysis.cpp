@@ -820,7 +820,7 @@ QString findingKindName(FindingKind k)
 {
     switch (k) {
     case FindingKind::ParseErrors: return QStringLiteral("Parse errors");
-    case FindingKind::IncludeCycle: return QStringLiteral("Include cycles");
+    case FindingKind::IncludeCycle: return QStringLiteral("Include and import cycles");
     case FindingKind::ModuleCycle: return QStringLiteral("Module cycles");
     case FindingKind::ClassCycle: return QStringLiteral("Class dependency cycles");
     case FindingKind::Recursion: return QStringLiteral("Recursion");
@@ -849,8 +849,8 @@ QString findingKindHint(FindingKind k)
         return QStringLiteral("clang could not compile these files cleanly, so what is shown about them may be incomplete. "
                               "A compile_commands.json from the real build fixes most of them.");
     case FindingKind::IncludeCycle:
-        return QStringLiteral("Headers that include each other, directly or around a loop: they can't be understood, "
-                              "built or reused one without the other.");
+        return QStringLiteral("Headers that include each other, or Python modules that import each other, directly or "
+                              "around a loop: they can't be understood, built or reused one without the other.");
     case FindingKind::ModuleCycle:
         return QStringLiteral("Folders that depend on each other: the layering is broken there.");
     case FindingKind::ClassCycle:
@@ -882,7 +882,7 @@ QString findingKindHint(FindingKind k)
     case FindingKind::DeepInheritance:
         return QStringLiteral("Long inheritance chains: behaviour is spread over many classes.");
     case FindingKind::NonVirtualDestructor:
-        return QStringLiteral("Base classes with virtual methods whose destructor is not virtual: deleting a "
+        return QStringLiteral("C++ base classes with virtual methods whose destructor is not virtual: deleting a "
                               "subclass through a base pointer is undefined behaviour.");
     case FindingKind::LargeFile:
         return QStringLiteral("Very large source files.");
@@ -923,6 +923,18 @@ bool looksUnused(const CodeModel &m, qint32 i)
     }
     if (s.has(Virtual))
         return false;   // called through a base, or overriding one
+    if (s.usr.startsWith(QLatin1String("py:"))) {
+        // Python calls these itself, or tools do: __dunder__ names, tests,
+        // what a module exports in __all__
+        if (s.name.startsWith(QLatin1String("__")) && s.name.endsWith(QLatin1String("__")))
+            return false;
+        const QString file = w.file >= 0 ? QFileInfo(m.files[w.file].path).fileName() : QString();
+        if ((file.startsWith(QLatin1String("test_")) || file.endsWith(QLatin1String("_test.py")) || file == QLatin1String("conftest.py"))
+            && (s.name.startsWith(QLatin1String("test")) || s.name.startsWith(QLatin1String("Test")) || s.kind == SymbolKind::Function))
+            return false;
+        if (s.name == QLatin1String("main") || s.name == QLatin1String("setup"))
+            return false;
+    }
     if (s.name.startsWith(QLatin1Char('~')) || s.name.startsWith(QLatin1String("operator")))
         return false;
     // Include guards and macros used only by #if/#ifdef aren't seen as uses
@@ -930,6 +942,13 @@ bool looksUnused(const CodeModel &m, qint32 i)
                                         || s.name.endsWith(QLatin1String("_HPP")) || s.name.endsWith(QLatin1String("_INCLUDED"))))
         return false;
     const qint32 ownType = isType(s.kind) ? m.outermostType(i) : -1;
+    if (s.usr.startsWith(QLatin1String("py:")) && (s.kind == SymbolKind::Variable)) {
+        for (qint32 r : m.refsTo[i]) {
+            if (m.refs[r].flags & RefRead)
+                return false;
+        }
+        return true;
+    }
     for (qint32 r : m.refsTo[i]) {
         const Reference &ref = m.refs[r];
         if (ref.from == i)
@@ -1004,7 +1023,11 @@ void cycles(const CodeModel &m, Report &rep)
             for (qint32 f : files)
                 names << m.files[f].relative;
             names.sort();
-            fd.title = QStringLiteral("%1 files include each other").arg(files.size());
+            const bool python = std::all_of(files.cbegin(), files.cend(), [&](qint32 f) {
+                return m.files[f].path.endsWith(QLatin1String(".py"));
+            });
+            fd.title = python ? QStringLiteral("%1 modules import each other").arg(files.size())
+                              : QStringLiteral("%1 files include each other").arg(files.size());
             fd.detail = names.join(QStringLiteral(" ↔ "));
             fd.loc.file = files.first();
             fd.loc.line = 1;
@@ -1201,7 +1224,8 @@ void classFindings(const CodeModel &m, const Thresholds &t, Report &rep)
                 hasVirtual = true;
         }
         const bool hidden = dtor >= 0 && (m.symbols[dtor].access == Access::Protected || m.symbols[dtor].access == Access::Private);
-        if (hasVirtual && c.children > 0 && !hidden && (dtor < 0 || !m.symbols[dtor].has(Virtual))) {
+        const bool python = s.usr.startsWith(QLatin1String("py:"));
+        if (!python && hasVirtual && c.children > 0 && !hidden && (dtor < 0 || !m.symbols[dtor].has(Virtual))) {
             // A base of its own with a virtual destructor makes it virtual
             bool inherited = false;
             for (qint32 e : m.outEdges[i]) {
@@ -1252,7 +1276,10 @@ void usageFindings(const CodeModel &m, Report &rep)
             rep.findings.append(f);
             continue;
         }
-        if ((s.kind == SymbolKind::Field || s.kind == SymbolKind::Variable) && reviewable(m, s) && !s.has(MetaCallable)) {
+        const bool pythonDunder = s.usr.startsWith(QLatin1String("py:")) && s.name.startsWith(QLatin1String("__"));
+        const bool pythonVariable = s.usr.startsWith(QLatin1String("py:")) && s.kind == SymbolKind::Variable;
+        if ((s.kind == SymbolKind::Field || s.kind == SymbolKind::Variable) && reviewable(m, s) && !s.has(MetaCallable)
+            && !pythonDunder) {
             if (s.parent >= 0 && isFunction(m.symbols[s.parent].kind))
                 continue;
             int reads = 0, writes = 0;
@@ -1263,7 +1290,7 @@ void usageFindings(const CodeModel &m, Report &rep)
                 if (fl & RefWrite)
                     writes++;
             }
-            if (writes > 0 && reads == 0) {
+            if (writes > 0 && reads == 0 && !pythonVariable) {   // a Python variable: reported as unused
                 Finding f;
                 f.kind = FindingKind::UnreadField;
                 f.severity = 1;
@@ -1275,6 +1302,7 @@ void usageFindings(const CodeModel &m, Report &rep)
                 rep.findings.append(f);
             }
             if (s.kind == SymbolKind::Variable && !s.has(Const) && !s.type.startsWith(QLatin1String("const "))
+                && !(pythonVariable && m.refsTo[i].size() <= 1)   // a Python name assigned once: a constant in all but name
                 && !s.type.contains(QLatin1String("constexpr")) && !s.type.contains(QLatin1String("atomic"))) {
                 QSet<qint32> writers;
                 for (qint32 r : m.refsTo[i]) {
@@ -1286,8 +1314,9 @@ void usageFindings(const CodeModel &m, Report &rep)
                 f.severity = writers.size() > 1 ? 1 : 0;
                 f.symbols = {i};
                 f.title = symbolTitle(m, i);
-                f.detail = QStringLiteral("%1 %2, written by %3 functions, used %4 times")
-                               .arg(s.has(Static) ? QStringLiteral("static") : QStringLiteral("global"), s.type)
+                f.detail = QStringLiteral("%1%2, written by %3 functions, used %4 times")
+                               .arg(s.has(Static) ? QStringLiteral("static") : QStringLiteral("global"),
+                                    s.type.isEmpty() ? QString() : QStringLiteral(" ") + s.type)
                                .arg(writers.size()).arg(m.refsTo[i].size());
                 f.loc = s.where();
                 f.score = writers.size() * 10 + m.refsTo[i].size();

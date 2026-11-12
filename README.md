@@ -1,6 +1,6 @@
 # Unravel
 
-See the architecture, flows and connections of C and C++ code: what a
+See the architecture, flows and connections of C, C++ and Python code: what a
 class is made of and what it touches, how control flows from `main`,
 which modules lean on which, where the cycles, the duplicates and the
 complexity are. Built for reviewing and understanding code you didn't
@@ -17,6 +17,15 @@ from the tools that did this best: [Sourcetrail](https://github.com/CoatiSoftwar
 graph and code views, and the hierarchical edge bundles, treemaps,
 table lenses and dependency matrices of
 [SolidSX and CPPVis](https://webspace.science.uu.nl/~telea001/SoftVis/CPPVis).
+
+Python goes through the same model and the same views. Python's own `ast`
+module reads every `.py` file under the project (nothing is imported or
+run): modules become namespaces, with their classes, functions, methods,
+fields and module variables, the imports between them, inheritance and
+overrides, and the calls it can resolve — names in scope, imports,
+`self` and `super()`, parameters and variables with a type annotation or
+a constructor call, and fields assigned such values. A mixed project gets
+both front ends at once.
 
 Qt 6 (C++ and Qt Quick), with the controls, themes and fonts of
 [Cache](../cache) and [igitt](../igitt).
@@ -52,6 +61,10 @@ the project tree or a node's context menu (right-click), or with *Fold → Fold 
 finds folders such as `3rdparty`, `third_party`, `vendor` or `external`. Folded folders apply to the
 Graph, Architecture, Matrix and Bundles views, are kept per project, and open again with a click on
 their node, from the menu or the tree.
+
+In the Graph, neighbours from another namespace (or Python module) than the active symbol's fold into
+one node per namespace, `ns:: 4 folded: …`, when there are two or more of them; a click opens it, its
+context menu folds it again, and *Fold namespaces* in the toolbar turns this off.
 
 Everything is drawn on the GPU through Qt Quick's scene graph: the edges as one vertex buffer per
 colour, the bundles, treemap and matrix as coloured meshes with scene-graph text, so panning,
@@ -91,6 +104,9 @@ window; from a terminal `unravel path/to/project`. Unravel then
    built with on the prefix path, so Qt projects configure);
 3. or compiles every source under the folder with the include paths where the headers are, and Qt's when
    the code includes Qt headers.
+
+Python files under the folder are read as well (with `python3`, which must be on the path), skipping
+virtual environments, `site-packages`, `__pycache__`, build trees and hidden folders.
 
 Parsing runs on all cores (up to 12); the index is kept in the cache folder, so the next start is
 instant, and the status bar says when the sources changed since. Extra compiler arguments for a project
@@ -144,6 +160,8 @@ prints the time per frame.
     class metrics, call trees and paths, the findings
   - `layout` — a layered (Sugiyama) layout and a squarified treemap
   - `report` — the Markdown review
+  - `python` — the Python front end: a script embedded in the binary (`python/unravel_python.py`, using
+    only `ast` and `tokenize`) run with `python3 -I`, its JSON merged into the model with `py:` USRs
   - `history` — the git log and diffs (with the git command line), changed lines carried forward to the
     work tree and mapped to symbols
 - [src/app](src/app) — what the QML uses: the `Session` (opening, indexing, the active symbol, history,
@@ -161,6 +179,10 @@ prints the time per frame.
   possible target.
 - Templates are indexed as written, not per instantiation.
 - Without a compilation database flags are guessed, and parse errors show where they were wrong.
+- Python is dynamic: a call through a name whose type the code doesn't state is resolved only when
+  exactly one method of the project has that name, `getattr`, monkey patching
+  and decorators that replace functions are invisible, and what is imported from outside the project
+  stays a name.
 
 ## Credits
 

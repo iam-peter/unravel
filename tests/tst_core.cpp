@@ -12,6 +12,7 @@
 #include "indexer.h"
 #include "layout.h"
 #include "project.h"
+#include "python.h"
 #include "report.h"
 
 using namespace Unravel;
@@ -289,6 +290,75 @@ private slots:
         QVERIFY(!reported(Analysis::FindingKind::Unused, QStringLiteral("INNER_MACRO")));
         for (const Analysis::Finding &f : r.findings)
             QVERIFY2(f.kind != Analysis::FindingKind::OrphanFile, qPrintable(f.title));
+    }
+
+    // samples/pyshop through the Python front end: the same model, the same
+    // analyses
+    void python()
+    {
+        if (Python::interpreter().isEmpty())
+            QSKIP("no python3");
+        const ProjectSetup setup = Project::discover(QStringLiteral(UNRAVEL_PYTHON_SAMPLE_DIR));
+        QVERIFY2(setup.error.isEmpty(), qPrintable(setup.error));
+        QVERIFY(setup.units.isEmpty());
+        QCOMPARE(setup.pythonFiles.size(), 4);
+        CodeModel p;
+        const IndexResult r = Indexer::run(setup, p);
+        QVERIFY(r.ok);
+        auto find = [&](const QString &qualified) -> qint32 {
+            for (qint32 i = 0; i < p.symbols.size(); ++i) {
+                if (p.symbols[i].qualified == qualified && !p.symbols[i].has(External))
+                    return i;
+            }
+            return -1;
+        };
+        auto edge = [&](const QString &from, const QString &to, RefKind kind) {
+            const qint32 a = find(from), b = find(to);
+            if (a < 0 || b < 0)
+                return false;
+            for (qint32 e : p.outEdges[a]) {
+                if (p.edges[e].to == b && p.edges[e].kind == kind)
+                    return true;
+            }
+            return false;
+        };
+        const qint32 order = find(QStringLiteral("shop.orders.Order"));
+        QVERIFY(order >= 0);
+        QCOMPARE(p.symbols[order].kind, SymbolKind::Class);
+        QCOMPARE(p.symbols[find(QStringLiteral("shop.orders.Order.__init__"))].kind, SymbolKind::Constructor);
+        QCOMPARE(p.symbols[find(QStringLiteral("shop.orders.Order.add"))].kind, SymbolKind::Method);
+        QVERIFY(p.symbols[find(QStringLiteral("shop.orders.main"))].has(EntryPoint));
+        // Through the annotated field: self.catalog.find() is Catalog.find
+        QVERIFY(edge(QStringLiteral("shop.orders.Order.add"), QStringLiteral("shop.catalog.Catalog.find"), RefKind::Call));
+        QVERIFY(edge(QStringLiteral("shop.orders.main"), QStringLiteral("shop.orders.Order.__init__"), RefKind::Call));
+        QVERIFY(edge(QStringLiteral("shop.orders.Order"), QStringLiteral("shop.orders.Base"), RefKind::Inherit));
+        QVERIFY(edge(QStringLiteral("shop.orders.Order.total"), QStringLiteral("shop.orders.Base.total"), RefKind::Override));
+
+        const Analysis::Report pr = Analysis::analyze(p);
+        auto reported = [&](Analysis::FindingKind k, const QString &qualified) {
+            const qint32 s = find(qualified);
+            for (const Analysis::Finding &f : pr.findings) {
+                if (f.kind == k && ((s >= 0 && f.symbols.contains(s)) || f.title.contains(qualified)))
+                    return true;
+            }
+            return false;
+        };
+        using K = Analysis::FindingKind;
+        QVERIFY(reported(K::Duplicate, QStringLiteral("make_slug")));
+        QVERIFY(reported(K::Unused, QStringLiteral("shop.orders.legacy_total")));
+        QVERIFY(!reported(K::Unused, QStringLiteral("shop.orders.Order.total")));   // overrides
+        QVERIFY(!reported(K::Unused, QStringLiteral("shop.orders.main")));
+        QVERIFY(reported(K::UnreadField, QStringLiteral("shop.orders.Order.audit")));
+        QVERIFY(reported(K::GlobalState, QStringLiteral("shop.catalog._registry_size")));
+        QVERIFY(reported(K::ManyParameters, QStringLiteral("shop.orders.Order.summary")));
+        bool importCycle = false;
+        for (const Analysis::Finding &f : pr.findings) {
+            if (f.kind == K::IncludeCycle && f.title.contains(QLatin1String("modules import each other")))
+                importCycle = true;
+            QVERIFY2(f.kind != K::NonVirtualDestructor, qPrintable(f.title));
+            QVERIFY2(f.kind != K::ParseErrors, qPrintable(f.title));
+        }
+        QVERIFY(importCycle);
     }
 
     // Commits mapped to the symbols they changed, through later commits that

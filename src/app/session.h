@@ -124,6 +124,8 @@ public:
     // Its folder and the folders above it, innermost first: what can be folded
     Q_INVOKABLE QStringList foldersOfFile(int file) const;
     Q_INVOKABLE void foldVendorFolders();
+    // The namespace a symbol is in ("" for the global one)
+    Q_INVOKABLE QString namespaceOf(int symbol) const;
     Q_INVOKABLE void unfoldAll();
     Q_INVOKABLE void toggleBookmark();
     Q_INVOKABLE void removeBookmark(int index);

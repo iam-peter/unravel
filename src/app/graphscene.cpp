@@ -493,6 +493,7 @@ QString GraphScene::toSvg(const QVariantMap &colors) const
 SymbolGraph::SymbolGraph(QObject *parent)
     : GraphScene(parent)
 {
+    connect(Session::instance(), &Session::modelChanged, this, [this] { m_openNamespaces.clear(); });
     connect(this, &SymbolGraph::inputChanged, this, &GraphScene::scheduleBuild);
     connect(Changes::instance(), &Changes::changesChanged, this, &GraphScene::scheduleBuild);
 }
@@ -564,6 +565,26 @@ void SymbolGraph::setKindFilter(const QVariantList &kinds)
         return;
     m_kinds = k;
     emit inputChanged();
+}
+
+void SymbolGraph::setFoldNamespaces(bool v)
+{
+    if (v == m_foldNamespaces)
+        return;
+    m_foldNamespaces = v;
+    emit inputChanged();
+}
+
+void SymbolGraph::openNamespace(const QString &ns)
+{
+    m_openNamespaces.insert(ns);
+    scheduleBuild();
+}
+
+void SymbolGraph::closeNamespace(const QString &ns)
+{
+    m_openNamespaces.remove(ns);
+    scheduleBuild();
 }
 
 void SymbolGraph::expandSide(int side)
@@ -641,7 +662,47 @@ void SymbolGraph::build()
         }
         return qint32(-2 - i);
     };
-    QHash<qint32, QSet<qint32>> foldMembers;   // what is used in each folded folder
+    QHash<qint32, QSet<qint32>> foldMembers;   // what is used in each folded folder or namespace
+
+    // Neighbours in another namespace fold into one node per namespace
+    // (when it has two or more), unless that namespace was opened
+    auto namespaceOf = [&](qint32 s) -> QString {
+        for (qint32 p = m.symbols[s].parent; p >= 0; p = m.symbols[p].parent) {
+            if (m.symbols[p].kind == SymbolKind::Namespace)
+                return m.displayName(p);
+        }
+        return QString();
+    };
+    const QString centerNamespace = namespaceOf(center);
+    QHash<QString, QSet<qint32>> byNamespace;
+    if (m_foldNamespaces && a.kind != SymbolKind::Namespace) {
+        for (qint32 f : std::as_const(focus)) {
+            for (const QVector<qint32> *list : {&m.outEdges[f], &m.inEdges[f]}) {
+                for (qint32 e : *list) {
+                    const qint32 other = list == &m.outEdges[f] ? m.edges[e].to : m.edges[e].from;
+                    if (other < 0 || (!m_showExternal && m.symbols[other].has(External)))
+                        continue;
+                    const qint32 node = m.nodeOwner(other);
+                    if (node >= 0 && node != center && m.symbols[node].kind != SymbolKind::Namespace)
+                        byNamespace[namespaceOf(node)].insert(node);
+                }
+            }
+        }
+    }
+    auto foldNamespace = [&](qint32 node) -> qint32 {
+        if (!m_foldNamespaces || node < 0)
+            return node;
+        const QString ns = namespaceOf(node);
+        if (ns == centerNamespace || m_openNamespaces.contains(ns) || byNamespace.value(ns).size() < 2)
+            return node;
+        const QString key = QStringLiteral("ns:") + ns;
+        qsizetype i = foldNames.indexOf(key);
+        if (i < 0) {
+            foldNames << key;
+            i = foldNames.size() - 1;
+        }
+        return qint32(-2 - i);
+    };
     QSet<qint32> centerMembers;
     if (active != center)
         centerMembers.insert(active);
@@ -674,6 +735,7 @@ void SymbolGraph::build()
         if (node == center || node < 0 || m_hidden.contains(node))
             return;   // within the node
         node = foldKey(node);
+        node = foldNamespace(node);
         Neighbour &n = neighbours[node];
         n.node = node;
         if (node < -1)
@@ -889,8 +951,8 @@ void SymbolGraph::build()
             const double by = y->baryCount ? y->bary / y->baryCount : 0;
             if (std::abs(bx - by) > 0.5)
                 return bx < by;
-            const QString nx = x->node < -1 ? foldNames[-2 - x->node] : m.symbols[x->node].name;
-            const QString ny = y->node < -1 ? foldNames[-2 - y->node] : m.symbols[y->node].name;
+            const QString nx = x->node < -1 ? foldNames[-2 - x->node].mid(foldNames[-2 - x->node].startsWith(QLatin1String("ns:")) ? 3 : 0) : m.symbols[x->node].name;
+            const QString ny = y->node < -1 ? foldNames[-2 - y->node].mid(foldNames[-2 - y->node].startsWith(QLatin1String("ns:")) ? 3 : 0) : m.symbols[y->node].name;
             return nx < ny;
         });
         QVector<QVariantMap> made;
@@ -898,15 +960,30 @@ void SymbolGraph::build()
         double maxW = 0, maxH = 0;
         for (Neighbour *n : std::as_const(list)) {
             if (n->node < -1) {
-                // A folded folder: one card, unfolded by a click
-                const QString fold = foldNames[-2 - n->node];
+                // A folded folder or namespace: one card, opened by a click
+                const QString key = foldNames[-2 - n->node];
+                const bool isNamespace = key.startsWith(QLatin1String("ns:"));
+                const QString fold = isNamespace ? key.mid(3) : key;
                 QVariantMap node;
                 node[QStringLiteral("symbol")] = -1;
                 node[QStringLiteral("file")] = -1;
-                node[QStringLiteral("kind")] = -4;
-                node[QStringLiteral("folder")] = fold;
-                node[QStringLiteral("title")] = QFileInfo(fold).fileName() + QStringLiteral("/");
-                node[QStringLiteral("subtitle")] = tr("%1 · %n symbols used", nullptr, int(foldMembers.value(n->node).size())).arg(fold);
+                if (isNamespace) {
+                    node[QStringLiteral("kind")] = -5;
+                    node[QStringLiteral("namespace")] = fold;
+                    node[QStringLiteral("title")] = fold.isEmpty() ? tr("(global namespace)") : fold + QStringLiteral("::");
+                    QStringList names;
+                    for (qint32 s : foldMembers.value(n->node))
+                        names << m.symbols[m.nodeOwner(s)].name;
+                    names.removeDuplicates();
+                    names.sort();
+                    node[QStringLiteral("subtitle")] = tr("%n folded", nullptr, int(names.size())) + QStringLiteral(": ")
+                                                     + names.mid(0, 6).join(QStringLiteral(", ")) + (names.size() > 6 ? QStringLiteral("…") : QString());
+                } else {
+                    node[QStringLiteral("kind")] = -4;
+                    node[QStringLiteral("folder")] = fold;
+                    node[QStringLiteral("title")] = QFileInfo(fold).fileName() + QStringLiteral("/");
+                    node[QStringLiteral("subtitle")] = tr("%1 · %n symbols used", nullptr, int(foldMembers.value(n->node).size())).arg(fold);
+                }
                 node[QStringLiteral("compact")] = true;
                 node[QStringLiteral("rows")] = QVariantList();
                 node[QStringLiteral("side")] = side;
@@ -986,7 +1063,8 @@ void SymbolGraph::build()
             b[QStringLiteral("title")] = tr("%n more", nullptr, int(rest.size()));
             QStringList names;
             for (const Neighbour *n : std::as_const(rest))
-                names << (n->node < -1 ? foldNames[-2 - n->node] : m.symbols[n->node].name);
+                names << (n->node < -1 ? foldNames[-2 - n->node].mid(foldNames[-2 - n->node].startsWith(QLatin1String("ns:")) ? 3 : 0)
+                                       : m.symbols[n->node].name);
             b[QStringLiteral("subtitle")] = names.mid(0, 12).join(QStringLiteral(", ")) + (names.size() > 12 ? QStringLiteral("…") : QString());
             b[QStringLiteral("w")] = 160.0;
             b[QStringLiteral("h")] = 34.0;

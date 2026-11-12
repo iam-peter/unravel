@@ -34,7 +34,7 @@ Rectangle {
                     font.weight: Styles.Primitives.fontWeight.bold
                 }
                 Label {
-                    text: qsTr("See the architecture, flows and connections of C and C++ code")
+                    text: qsTr("See the architecture, flows and connections of C, C++ and Python code")
                     color: Theme.textMuted
                     wrapMode: Text.Wrap
                     Layout.fillWidth: true
@@ -46,7 +46,7 @@ Rectangle {
             Layout.fillWidth: true
             wrapMode: Text.Wrap
             color: Theme.textMuted
-            text: qsTr("Open a project folder: unravel looks for a compile_commands.json in it and in its build folders, asks CMake for one when there is a CMakeLists.txt, or else compiles every source with include paths it finds. clang does the parsing, on all cores; the index is kept for next time.")
+            text: qsTr("Open a project folder: unravel looks for a compile_commands.json in it and in its build folders, asks CMake for one when there is a CMakeLists.txt, or else compiles every source with include paths it finds. clang does the parsing, on all cores; Python files are read with Python's own ast, beside them. The index is kept for next time.")
         }
 
         RowLayout {

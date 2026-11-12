@@ -298,7 +298,9 @@ void CodeModel::finalize()
             qualify(s.parent);
             const Symbol &p = symbols[s.parent];
             const QString pq = p.qualified.isEmpty() ? p.name : p.qualified;
-            s.qualified = pq.isEmpty() ? s.name : pq + QStringLiteral("::") + s.name;
+            // Python's names are dotted
+            const QString sep = s.usr.startsWith(QLatin1String("py:")) ? QStringLiteral(".") : QStringLiteral("::");
+            s.qualified = pq.isEmpty() ? s.name : pq + sep + s.name;
         } else if (s.qualified.isEmpty()) {
             s.qualified = s.name;
         }
