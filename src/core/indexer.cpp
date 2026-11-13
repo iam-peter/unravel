@@ -1163,6 +1163,10 @@ QString resourceDir()
             if (QFileInfo::exists(c + major + QStringLiteral("/include/stddef.h")))
                 return QDir::cleanPath(c + major);
         }
+        // Run from the build folder: the LLVM installation it was built with
+        const QString built = QStringLiteral(UNRAVEL_CLANG_BUILD_RESOURCE_DIR);
+        if (!built.isEmpty() && QFileInfo::exists(built + QStringLiteral("/include/stddef.h")))
+            return built;
         return QString();
     }();
     return dir;
@@ -1170,7 +1174,8 @@ QString resourceDir()
 
 // What a compiler on this system adds by itself and libclang doesn't: on
 // macOS the SDK, where the C and C++ headers are (clang finds it through
-// xcrun or its configuration files, which libclang reads neither of)
+// xcrun or its configuration files, which libclang reads neither of); on
+// Windows a pass on the compiler version check of Visual Studio's headers
 QStringList platformArguments()
 {
 #ifdef Q_OS_MACOS
@@ -1187,6 +1192,10 @@ QStringList platformArguments()
         return sdk.isEmpty() ? QStringList() : QStringList{QStringLiteral("-isysroot"), sdk};
     }();
     return args;
+#elif defined(Q_OS_WIN)
+    // Visual Studio's standard library refuses a clang older than the one
+    // it was released with; the bundled one may well be
+    return {QStringLiteral("-D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH")};
 #else
     return {};
 #endif

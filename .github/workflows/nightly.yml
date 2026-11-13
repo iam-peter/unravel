@@ -24,6 +24,9 @@ concurrency:
 env:
   QT_VERSION: "6.12.0"
   LLVM_VERSION: "18"
+  # Visual Studio's standard library wants a recent clang (19 or newer as
+  # of Visual Studio 2022 17.14): the newest LLVM release
+  WINDOWS_LLVM_VERSION: "23.1.5"
 
 jobs:
   changes:
@@ -170,7 +173,7 @@ jobs:
       - name: libclang
         shell: bash
         run: |
-          version="$LLVM_VERSION.1.8"
+          version="$WINDOWS_LLVM_VERSION"
           name="clang+llvm-$version-x86_64-pc-windows-msvc"
           curl -sSfL -o llvm.tar.xz "https://github.com/llvm/llvm-project/releases/download/llvmorg-$version/$name.tar.xz"
           mkdir -p /c/llvm
@@ -208,7 +211,7 @@ jobs:
           windeployqt --release --qmldir qml --qmldir packaging/qml-imports Unravel/unravel.exe
           # clang's own headers, where the indexer looks for them
           New-Item -ItemType Directory Unravel/lib/clang | Out-Null
-          Copy-Item -Recurse "C:\llvm\lib\clang\${env:LLVM_VERSION}" Unravel/lib/clang/
+          Copy-Item -Recurse "C:\llvm\lib\clang\*" Unravel/lib/clang/
           Copy-Item LICENSE Unravel/LICENSE.txt
           Compress-Archive -Path Unravel -DestinationPath unravel-windows-x64.zip
 
@@ -296,9 +299,8 @@ jobs:
 
       - name: libclang
         run: |
-          # Homebrew's current LLVM, not LLVM_VERSION: the libc++ headers in
-          # Xcode's SDK are written for a recent clang, and an older one
-          # fails on them (std::string goes missing)
+          # Homebrew's current LLVM: Xcode's libc++ headers keep up with
+          # recent clang releases
           brew install llvm
           echo "LLVM_PREFIX=$(brew --prefix llvm)" >> "$GITHUB_ENV"
           "$(brew --prefix llvm)/bin/clang" --version

@@ -24,7 +24,7 @@ set(QT_QML_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/qml)
 # of the usual ones.
 set(UNRAVEL_LLVM_ROOT "" CACHE PATH "LLVM installation with libclang (include/clang-c and lib/libclang)")
 set(_llvm_hints ${UNRAVEL_LLVM_ROOT})
-foreach(v 22 21 20 19 18 17)
+foreach(v 23 22 21 20 19 18 17)
     list(APPEND _llvm_hints /usr/lib/llvm-${v} /usr/local/opt/llvm@${v} /opt/homebrew/opt/llvm@${v})
 endforeach()
 list(APPEND _llvm_hints /usr/local/opt/llvm /opt/homebrew/opt/llvm "C:/Program Files/LLVM" /usr/local /usr)
@@ -45,6 +45,20 @@ add_library(libclang UNKNOWN IMPORTED)
 set_target_properties(libclang PROPERTIES
     IMPORTED_LOCATION ${LIBCLANG_LIBRARY}
     INTERFACE_INCLUDE_DIRECTORIES ${LIBCLANG_INCLUDE_DIR})
+# clang's own headers (stddef.h, stdarg.h, ...) in this LLVM installation:
+# the indexer's last resort when none are next to the program, which is
+# how builds and tests run from the build folder. libclang finds them by
+# itself on some systems only (not with Homebrew's LLVM).
+get_filename_component(_llvm_root "${LIBCLANG_INCLUDE_DIR}" DIRECTORY)
+file(GLOB _clang_resource_headers "${_llvm_root}/lib/clang/*/include/stddef.h")
+set(UNRAVEL_CLANG_BUILD_RESOURCE_DIR "")
+if(_clang_resource_headers)
+    list(SORT _clang_resource_headers COMPARE NATURAL ORDER DESCENDING)
+    list(GET _clang_resource_headers 0 _clang_stddef)
+    get_filename_component(_clang_include "${_clang_stddef}" DIRECTORY)
+    get_filename_component(UNRAVEL_CLANG_BUILD_RESOURCE_DIR "${_clang_include}" DIRECTORY)
+endif()
+message(STATUS "clang resource directory: ${UNRAVEL_CLANG_BUILD_RESOURCE_DIR}")
 # On Windows the import library is in lib, the DLL in bin: copied next to
 # the programs, so they and the tests start from the build folder
 if(WIN32)
@@ -90,6 +104,7 @@ add_library(unravel_core STATIC
 target_include_directories(unravel_core PUBLIC src/core)
 target_include_directories(unravel_core PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
 target_link_libraries(unravel_core PUBLIC Qt6::Core libclang)
+target_compile_definitions(unravel_core PRIVATE UNRAVEL_CLANG_BUILD_RESOURCE_DIR="${UNRAVEL_CLANG_BUILD_RESOURCE_DIR}")
 set_target_properties(unravel_core PROPERTIES AUTOMOC OFF)
 
 # The command line: index a project, print what was found, write the report
