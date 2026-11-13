@@ -114,8 +114,8 @@ jobs:
             --executable build/bin/unravel --executable build/bin/unravel-cli \
             --desktop-file logo/unravel.desktop --icon-file logo/unravel.svg --plugin qt
           # clang's headers beside the libclang that came along
-          mkdir -p AppDir/usr/lib/clang
-          cp -rL "/usr/lib/llvm-$LLVM_VERSION/lib/clang/$LLVM_VERSION" AppDir/usr/lib/clang/
+          mkdir -p "AppDir/usr/lib/clang/$LLVM_VERSION"
+          cp -rL "/usr/lib/llvm-$LLVM_VERSION/lib/clang/$LLVM_VERSION/include" "AppDir/usr/lib/clang/$LLVM_VERSION/"
           ./linuxdeploy-x86_64.AppImage --appdir AppDir --output appimage
           mv Unravel-*.AppImage unravel-linux-x64.AppImage
           find AppDir/usr/plugins -maxdepth 2 | sort
@@ -178,7 +178,8 @@ jobs:
           curl -sSfL -o llvm.tar.xz "https://github.com/llvm/llvm-project/releases/download/llvmorg-$version/$name.tar.xz"
           mkdir -p /c/llvm
           tar -xJf llvm.tar.xz -C /c/llvm --strip-components=1 \
-            "$name/bin/libclang.dll" "$name/lib/libclang.lib" "$name/include/clang-c" "$name/lib/clang"
+            "$name/bin/libclang.dll" "$name/lib/libclang.lib" "$name/include/clang-c" \
+            --wildcards "$name/lib/clang/*/include"
           test -f /c/llvm/include/clang-c/Index.h
           echo "UNRAVEL_LLVM_ROOT=C:/llvm" >> "$GITHUB_ENV"
 
@@ -336,13 +337,23 @@ jobs:
           macdeployqt "$app" -qmldir="$GITHUB_WORKSPACE/qml" \
             -qmldir="$GITHUB_WORKSPACE/packaging/qml-imports" \
             -executable="$app/Contents/MacOS/unravel-cli" -libpath="$LLVM_PREFIX/lib"
-          # clang's own headers, where the indexer looks for them
-          mkdir -p "$app/Contents/Resources/clang"
-          cp -RL "$LLVM_PREFIX"/lib/clang/* "$app/Contents/Resources/clang/"
-          # Nothing may still point into Homebrew, users don't have it
-          if find "$app/Contents" -type f \( -perm -u+x -o -name '*.dylib' \) -exec otool -L {} + 2>/dev/null \
-               | grep -E '^\s+/(opt/homebrew|usr/local)/'; then
-            echo "Libraries left outside the bundle" >&2
+          # Database drivers for servers unravel never talks to, linking
+          # libraries users don't have
+          rm -f "$app"/Contents/PlugIns/sqldrivers/libqsql{odbc,psql,mimer}.dylib
+          # clang's own headers, where the indexer looks for them (not its
+          # sanitizer runtimes next to them)
+          for dir in "$LLVM_PREFIX"/lib/clang/*; do
+            mkdir -p "$app/Contents/Resources/clang/$(basename "$dir")"
+            cp -RL "$dir/include" "$app/Contents/Resources/clang/$(basename "$dir")/"
+          done
+          # Nothing may still load from Homebrew, users don't have it
+          leaks=$(find "$app/Contents" -type f \( -perm -u+x -o -name '*.dylib' \) | while read -r f; do
+            otool -l "$f" 2>/dev/null | awk -v f="$f" '/cmd LC_(LOAD|LOAD_WEAK|REEXPORT)_DYLIB/ {
+              getline; getline; if ($2 ~ /^\/(opt\/homebrew|usr\/local)\//) print f ": " $2 }'
+          done)
+          if [ -n "$leaks" ]; then
+            echo "Libraries left outside the bundle:" >&2
+            echo "$leaks" >&2
             exit 1
           fi
           # Changed after macdeployqt signed it: sign again, ad hoc
