@@ -17,6 +17,10 @@ using namespace Unravel;
 
 namespace {
 
+// Where a neighbour sits around the focus. At file scope: MSVC doesn't
+// see a function's own enumerators from a local struct's initialisers.
+enum Side { LeftSide, RightSide, TopSide, BottomSide };
+
 constexpr double kHeader = 30;
 constexpr double kRow = 22;
 constexpr double kSection = 18;
@@ -621,7 +625,6 @@ void SymbolGraph::build()
         }
     }
 
-    enum Side { LeftSide, RightSide, TopSide, BottomSide };
     struct Neighbour {
         qint32 node;
         QSet<qint32> members;

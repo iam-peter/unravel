@@ -73,6 +73,15 @@ private slots:
         QVERIFY(r.ok);
         QCOMPARE(r.failedUnits, 0);
         report = Analysis::analyze(m);
+        // What clang complained about, for when the checks below fail on a
+        // platform whose headers it doesn't handle
+        int shown = 0;
+        for (const Diagnostic &d : m.diagnostics) {
+            if (d.severity < Diagnostic::Error || shown++ >= 20)
+                continue;
+            const QString where = d.loc.file >= 0 ? m.files[d.loc.file].path : QStringLiteral("?");
+            qWarning("%s:%d: %s", qPrintable(where), d.loc.line, qPrintable(d.message));
+        }
     }
 
     void symbols()

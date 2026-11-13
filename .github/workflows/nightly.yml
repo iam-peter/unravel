@@ -296,8 +296,12 @@ jobs:
 
       - name: libclang
         run: |
-          brew install "llvm@$LLVM_VERSION"
-          echo "LLVM_PREFIX=$(brew --prefix "llvm@$LLVM_VERSION")" >> "$GITHUB_ENV"
+          # Homebrew's current LLVM, not LLVM_VERSION: the libc++ headers in
+          # Xcode's SDK are written for a recent clang, and an older one
+          # fails on them (std::string goes missing)
+          brew install llvm
+          echo "LLVM_PREFIX=$(brew --prefix llvm)" >> "$GITHUB_ENV"
+          "$(brew --prefix llvm)/bin/clang" --version
 
       - name: Build
         run: |
@@ -332,7 +336,7 @@ jobs:
             -executable="$app/Contents/MacOS/unravel-cli" -libpath="$LLVM_PREFIX/lib"
           # clang's own headers, where the indexer looks for them
           mkdir -p "$app/Contents/Resources/clang"
-          cp -RL "$LLVM_PREFIX/lib/clang/$LLVM_VERSION" "$app/Contents/Resources/clang/"
+          cp -RL "$LLVM_PREFIX"/lib/clang/* "$app/Contents/Resources/clang/"
           # Nothing may still point into Homebrew, users don't have it
           if find "$app/Contents" -type f \( -perm -u+x -o -name '*.dylib' \) -exec otool -L {} + 2>/dev/null \
                | grep -E '^\s+/(opt/homebrew|usr/local)/'; then
