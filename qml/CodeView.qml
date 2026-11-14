@@ -94,6 +94,10 @@ Pane {
             spacing: 8
             topMargin: 8
             bottomMargin: 8
+            // The cards' side gaps: ListView puts its delegates at x 0
+            leftMargin: 8
+            rightMargin: 8
+            flickableDirection: Flickable.VerticalFlick
             cacheBuffer: 2000
             boundsBehavior: Flickable.StopAtBounds
             ScrollBar.vertical: ScrollBar {}
@@ -109,8 +113,7 @@ Pane {
                 required property var modelData
                 required property int index
                 readonly property real lineHeight: text.lineCount > 0 ? text.contentHeight / text.lineCount : 16
-                width: ListView.view.width - 16
-                x: 8
+                width: ListView.view.width - ListView.view.leftMargin - ListView.view.rightMargin
                 height: head.height + text.height + 10
                 radius: Theme.radius
                 color: Theme.card
