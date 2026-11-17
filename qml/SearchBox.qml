@@ -87,6 +87,10 @@ Item {
         x: (box.width - width) / 2
         height: Math.min(520, header.implicitHeight + list.contentHeight + 24)
         padding: 6
+        // Not modal, unlike the style's popups: the field stays editable
+        // with the mouse while the results show. A press outside the field
+        // closes them and goes on to what it was on.
+        modal: false
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutsideParent
 
         ColumnLayout {
