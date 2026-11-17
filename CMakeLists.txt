@@ -10,6 +10,9 @@ find_package(Qt6 6.9 REQUIRED COMPONENTS Core Gui Qml Quick QuickControls2 Svg C
 qt_standard_project_setup(REQUIRES 6.8)
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+# An installed unravel (cmake --install, e.g. into ~/.local) finds the Qt
+# and the libclang it was built against
+set(CMAKE_INSTALL_RPATH_USE_LINK_PATH ON)
 if(MSVC)
     # The sources are UTF-8 (arrows and dashes in strings); the indexer is big
     add_compile_options(/utf-8 /bigobj /permissive- /Zc:__cplusplus)

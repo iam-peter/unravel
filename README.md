@@ -167,6 +167,19 @@ ctest --test-dir build --output-on-failure
 `samples/warehouse` is a small program with known flaws (layers that depend on each other, a helper
 written three times, a base without a virtual destructor, global state, dead code) to try it on.
 
+For daily use, install a release build next to the debug one in `build/`; it goes into `~/.local` with
+an entry in the application menu, and finds the Qt and libclang it was built against:
+
+```bash
+cmake -S . -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=$HOME/.local -DCMAKE_PREFIX_PATH=$HOME/Qt/6.12.0/gcc_64
+```
+
+```bash
+cmake --build build-release && cmake --install build-release
+```
+
+Run the second command again to update it.
+
 ### The command line
 
 `unravel-cli` indexes without the window, for scripts and CI:
