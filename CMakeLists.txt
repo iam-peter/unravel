@@ -216,6 +216,10 @@ if(NOT UNRAVEL_CORE_ONLY)
     if(UNIX AND NOT APPLE)
         install(FILES logo/unravel.desktop DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
         install(FILES logo/unravel.svg DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps)
+        # Running menus and finders (GTK) read an icon folder once and look
+        # again only when the theme's folder changes, as the icon theme
+        # specification asks installers to make it do
+        install(CODE "file(TOUCH_NOCREATE \"\$ENV{DESTDIR}${CMAKE_INSTALL_FULL_DATADIR}/icons/hicolor\")")
     endif()
 endif()
 
