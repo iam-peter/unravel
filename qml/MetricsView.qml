@@ -55,6 +55,11 @@ Item {
             }
         }
 
+        HistoryBar {
+            Layout.fillWidth: true
+            visible: modeBar.currentIndex === MetricsTable.Files
+        }
+
         HorizontalHeaderView {
             id: header
             Layout.fillWidth: true

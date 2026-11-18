@@ -1,6 +1,7 @@
 #include "history.h"
 
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QProcess>
@@ -12,8 +13,14 @@ namespace Unravel::History {
 
 namespace {
 
-bool runGit(const QString &repo, const QStringList &args, QByteArray *out, QString *error = nullptr)
+bool runGit(const QString &repo, const QStringList &args, QByteArray *out, QString *error = nullptr,
+            const std::atomic_bool *cancel = nullptr, int timeoutMs = 0, qsizetype maxBytes = 0)
 {
+    if (cancel && cancel->load()) {
+        if (error)
+            *error = QStringLiteral("Git history query cancelled");
+        return false;
+    }
     QProcess git;
     git.setProgram(QStringLiteral("git"));
     // Plain, stable output: no pager, colours, external diff tools or quoted paths
@@ -30,16 +37,36 @@ bool runGit(const QString &repo, const QStringList &args, QByteArray *out, QStri
             *error = QStringLiteral("git could not be started");
         return false;
     }
+    QElapsedTimer timer;
+    timer.start();
     QByteArray data;
-    while (!git.waitForFinished(100)) {
+    while (true) {
+        const bool finished = git.waitForFinished(100);
         data += git.readAllStandardOutput();
-        if (git.state() == QProcess::NotRunning)
+        const bool tooLarge = maxBytes > 0 && data.size() > maxBytes;
+        if ((cancel && cancel->load()) || (timeoutMs > 0 && timer.elapsed() >= timeoutMs) || tooLarge) {
+            git.kill();
+            git.waitForFinished();
+            if (error) {
+                if (cancel && cancel->load())
+                    *error = QStringLiteral("Git history query cancelled");
+                else if (tooLarge)
+                    *error = QStringLiteral("Git history output is too large; choose a shorter time window");
+                else
+                    *error = QStringLiteral("Git history query timed out; choose a shorter time window");
+            }
+            return false;
+        }
+        if (finished || git.state() == QProcess::NotRunning)
             break;
     }
     data += git.readAllStandardOutput();
     if (git.exitStatus() != QProcess::NormalExit || git.exitCode() != 0) {
-        if (error)
+        if (error) {
             *error = QString::fromLocal8Bit(git.readAllStandardError()).trimmed();
+            if (error->isEmpty())
+                *error = QStringLiteral("Git failed (exit code %1)").arg(git.exitCode());
+        }
         return false;
     }
     *out = data;
@@ -112,6 +139,111 @@ QVector<Commit> log(const QString &repo, int limit, const QString &path)
         commits.append(c);
     }
     return commits;
+}
+
+Activity fileActivity(const QString &dir, const QString &revision, qint64 since, qint64 until,
+                      const std::atomic_bool *cancel)
+{
+    Activity result;
+    result.since = since;
+    result.until = until;
+    if (since < 0 || until < since) {
+        result.error = QStringLiteral("Invalid Git history time window");
+        return result;
+    }
+    auto query = [&](const QStringList &args, QByteArray *out) {
+        const bool ok = runGit(dir, args, out, &result.error, cancel, 120000, 128 * 1024 * 1024);
+        result.cancelled = cancel && cancel->load();
+        return ok && !result.cancelled;
+    };
+    QByteArray out;
+    if (!query({QStringLiteral("rev-parse"), QStringLiteral("--show-toplevel")}, &out)) {
+        if (!result.cancelled && result.error.contains(QLatin1String("not a git repository")))
+            result.error.clear();
+        return result;
+    }
+    result.repository = QDir::cleanPath(QString::fromUtf8(out).trimmed());
+    if (!query({QStringLiteral("rev-parse"), QStringLiteral("--verify"), QStringLiteral("--end-of-options"),
+                revision + QStringLiteral("^{commit}")}, &out))
+        return result;
+    result.revision = QString::fromUtf8(out).trimmed();
+    if (!query({QStringLiteral("rev-parse"), QStringLiteral("--is-shallow-repository")}, &out))
+        return result;
+    result.shallow = out.trimmed() == "true";
+    if (!query({QStringLiteral("log"), QStringLiteral("--no-merges"), QStringLiteral("--no-renames"),
+                QStringLiteral("--no-show-signature"), QStringLiteral("--no-notes"), QStringLiteral("--no-color"),
+                QStringLiteral("--no-ext-diff"), QStringLiteral("--no-textconv"), QStringLiteral("--numstat"),
+                QStringLiteral("-z"), QStringLiteral("--format=%x00UNRAVEL-COMMIT%x00%H%x00%ct%x00%aE%x00"),
+                QStringLiteral("--since-as-filter=@%1").arg(since), QStringLiteral("--until=@%1").arg(until),
+                result.revision, QStringLiteral("--")}, &out))
+        return result;
+
+    // NUL framing preserves spaces, tabs, and newlines in filenames. Only
+    // the first two tabs of a numstat record separate fields.
+    const QList<QByteArray> records = out.split('\0');
+    QString author;
+    qint64 time = 0;
+    bool inCommit = false;
+    QSet<QString> touched;
+    for (qsizetype i = 0; i < records.size(); ++i) {
+        if (cancel && cancel->load()) {
+            result.cancelled = true;
+            result.files.clear();
+            return result;
+        }
+        QByteArray record = records[i];
+        if (record.isEmpty() || record == "\n")
+            continue;
+        if (record == "UNRAVEL-COMMIT") {
+            if (i + 3 >= records.size()) {
+                result.error = QStringLiteral("Incomplete Git history commit record");
+                break;
+            }
+            ++i; // the commit hash
+            bool ok = false;
+            time = records[++i].toLongLong(&ok);
+            author = QString::fromUtf8(records[++i]);
+            if (!ok || author.isEmpty()) {
+                result.error = QStringLiteral("Invalid Git history commit record");
+                break;
+            }
+            touched.clear();
+            inCommit = true;
+            continue;
+        }
+        if (record.startsWith('\n'))
+            record.remove(0, 1);
+        const qsizetype first = record.indexOf('\t');
+        const qsizetype second = record.indexOf('\t', first + 1);
+        if (!inCommit || first <= 0 || second <= first || second + 1 >= record.size()) {
+            result.error = QStringLiteral("Invalid Git history file record");
+            break;
+        }
+        const QByteArray plus = record.left(first), minus = record.mid(first + 1, second - first - 1);
+        const bool binary = plus == "-" && minus == "-";
+        bool plusOk = false, minusOk = false;
+        const qint64 added = plus.toLongLong(&plusOk), removed = minus.toLongLong(&minusOk);
+        if (!binary && (!plusOk || !minusOk || added < 0 || removed < 0)) {
+            result.error = QStringLiteral("Invalid Git history line counts");
+            break;
+        }
+        if (time < since || time > until)
+            continue;
+        const QString path = QString::fromUtf8(record.mid(second + 1));
+        FileActivity &file = result.files[path];
+        if (!touched.contains(path)) {
+            ++file.commits;
+            touched.insert(path);
+        }
+        file.added += binary ? 0 : added;
+        file.removed += binary ? 0 : removed;
+        file.binary |= binary;
+        file.lastChanged = std::max(file.lastChanged, time);
+        file.authors.insert(author);
+    }
+    if (!result.error.isEmpty())
+        result.files.clear();
+    return result;
 }
 
 QVector<FileDiff> parseDiff(const QByteArray &diff)

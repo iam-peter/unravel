@@ -6,6 +6,8 @@
 #include <QStringList>
 #include <QVector>
 
+#include <atomic>
+
 #include "model.h"
 
 // What commits changed, in terms of the indexed code: git's history read
@@ -31,6 +33,29 @@ QString repositoryRoot(const QString &dir);
 // The latest commits (first parent first), newest first; `path` limits
 // them to those touching it
 QVector<Commit> log(const QString &repo, int limit = 500, const QString &path = {});
+
+struct FileActivity {
+    qint64 commits = 0, added = 0, removed = 0;
+    qint64 lastChanged = 0; // committer timestamp, seconds since epoch
+    QSet<QString> authors; // mailmap-resolved author identities
+    bool binary = false;  // at least one change has no line counts
+};
+
+struct Activity {
+    QString repository, revision, error;
+    qint64 since = 0, until = 0;
+    QHash<QString, FileActivity> files; // repository-relative paths, not rename lineages
+    bool shallow = false;
+    bool cancelled = false;
+
+    bool ready() const { return !repository.isEmpty() && !revision.isEmpty() && error.isEmpty() && !cancelled; }
+};
+
+// Non-merge commits reachable from revision, inclusive committer-time bounds.
+// Counts changes at each pathname; renames are a deletion and an addition.
+// An empty repository with no error means dir is not in a Git worktree.
+Activity fileActivity(const QString &dir, const QString &revision, qint64 since, qint64 until,
+                      const std::atomic_bool *cancel = nullptr);
 
 // One hunk of a unified diff with no context: `oldCount` lines from
 // `oldStart` became `newCount` lines from `newStart`

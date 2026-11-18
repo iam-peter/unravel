@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "hotspots.h"
 #include "layout.h"
 #include "session.h"
 #include "sgutil.h"
@@ -1092,6 +1093,14 @@ TreemapView::TreemapView(QQuickItem *parent)
         else
             m_dirty = true;
     });
+    connect(Hotspots::instance(), &Hotspots::changed, this, [this] {
+        if (m_colorMetric != Churn)
+            return;
+        if (isVisible())
+            rebuild();
+        else
+            m_dirty = true;
+    });
     rebuild();
 }
 
@@ -1163,6 +1172,7 @@ QString TreemapView::legendLow() const
     switch (m_colorMetric) {
     case Unused: return tr("used");
     case Kind: return tr("by kind");
+    case Churn: return m_historyReady ? QStringLiteral("0") : tr("unavailable");
     default: return QStringLiteral("0");
     }
 }
@@ -1172,6 +1182,7 @@ QString TreemapView::legendHigh() const
     switch (m_colorMetric) {
     case Unused: return tr("looks unused");
     case Kind: return QString();
+    case Churn: return m_historyReady ? QString::number(qRound(m_maxValue)) : QString();
     default: return QString::number(qRound(m_maxValue));
     }
 }
@@ -1207,6 +1218,7 @@ double TreemapView::metricOf(qint32 s) const
         return n;
     }
     case Kind: return double(int(sym.kind));
+    case Churn: return 0; // historical activity is shown at file level only
     }
     return 0;
 }
@@ -1217,7 +1229,10 @@ void TreemapView::rebuild()
     m_tree.clear();
     m_root = -1;
     m_hoveredNode = -1;
+    m_hoveredInfo.clear();
+    emit hoverChanged();
     m_findingCount.clear();
+    m_historyReady = Hotspots::instance()->ready();
     if (!m_model) {
         update();
         return;
@@ -1273,6 +1288,11 @@ void TreemapView::rebuild()
         fn.path = file.relative;
         fn.file = f;
         fn.kind = -2;
+        if (m_colorMetric == Churn) {
+            const auto *activity = Hotspots::instance()->forFile(file.path);
+            fn.value = activity ? double(activity->commits) : -1;
+            maxValue = std::max(maxValue, fn.value);
+        }
         fn.depth = m_tree[dir].depth + 1;
         m_tree.append(fn);
         const int fileNode = int(m_tree.size() - 1);
@@ -1317,6 +1337,10 @@ void TreemapView::rebuild()
             }
             if (size <= 0)
                 continue;
+            if (m_colorMetric == Churn) {
+                sum += size;
+                continue;
+            }
             TNode sn;
             sn.name = m.nodeOwner(s) != s ? m.symbols[m.nodeOwner(s)].name + QStringLiteral("::") + sym.name : sym.name;
             sn.symbol = s;
@@ -1342,8 +1366,13 @@ void TreemapView::rebuild()
         if (t.kind != -3)
             return t.size;
         double s = 0;
-        for (int c : std::as_const(t.children))
+        if (m_colorMetric == Churn)
+            t.value = -1;
+        for (int c : std::as_const(t.children)) {
             s += total(c);
+            if (m_colorMetric == Churn)
+                t.value = std::max(t.value, m_tree[c].value);
+        }
         m_tree[n].size = s;
         return s;
     };
@@ -1388,6 +1417,8 @@ void TreemapView::layoutNode(int n, const QRectF &r, int depth)
 
 QColor TreemapView::colorFor(const TNode &n) const
 {
+    if (m_colorMetric == Churn && n.value < 0)
+        return QColor(128, 128, 128);
     const QColor low = colorOf(m_colors, QStringLiteral("low"), QColor(90, 180, 110));
     const QColor midc = colorOf(m_colors, QStringLiteral("mid"), QColor(230, 190, 60));
     const QColor high = colorOf(m_colors, QStringLiteral("high"), QColor(220, 70, 60));
@@ -1449,6 +1480,14 @@ QSGNode *TreemapView::updatePaintNode(QSGNode *old, UpdatePaintNodeData *)
             const QRectF r = t.rect;
             if (r.width() < 1 || r.height() < 1)
                 return;
+            if (t.kind == -2 && m_colorMetric == Churn) {
+                const QColor c = colorFor(t);
+                mesh.gradient(r.adjusted(0.5, 0.5, -0.5, -0.5), c.lighter(118), c.darker(112));
+                if (r.width() > 36 && r.height() > 14)
+                    Sg::addText(c.lightnessF() > 0.55 ? dark : light, t.name, font,
+                                QRectF(r.left() + 3, r.top() + 1, r.width() - 6, 14));
+                return;
+            }
             if (t.kind == -3 || t.kind == -2) {
                 if (n != m_root) {
                     mesh.rect(r.adjusted(1, 1, -1, -1), t.kind == -3 ? withAlpha(frame, 0.18) : withAlpha(bg, 0.6));

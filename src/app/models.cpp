@@ -1,14 +1,19 @@
 #include "models.h"
 
+#include <QDateTime>
 #include <QFile>
 #include <QFileInfo>
 #include <QTimer>
+#include <QTimeZone>
 
 #include <algorithm>
+#include <cmath>
 #include <functional>
+#include <limits>
 
 #include "changes.h"
 #include "highlight.h"
+#include "hotspots.h"
 #include "session.h"
 
 using namespace Unravel;
@@ -615,6 +620,10 @@ MetricsTable::MetricsTable(QObject *parent)
     : QAbstractTableModel(parent)
 {
     connect(Session::instance(), &Session::modelChanged, this, &MetricsTable::reload);
+    connect(Hotspots::instance(), &Hotspots::changed, this, [this] {
+        if (m_mode == Files)
+            reload();
+    });
     reload();
 }
 
@@ -665,19 +674,26 @@ QVariant MetricsTable::data(const QModelIndex &index, int role) const
     const int c = index.column();
     const Column &col = m_columns[c];
     const double v = r.values.value(c);
+    const bool missing = std::isnan(v);
     switch (role) {
     case Qt::DisplayRole:
         if (c == 0)
             return r.name;
         if (!col.numeric)
             return r.location;
+        if (m_mode == Files && (c == 9 || c == 10) && r.binaryHistory)
+            return tr("Unknown (binary)");
+        if (missing)
+            return tr("Unavailable");
+        if (m_mode == Files && c == 12)
+            return v > 0 ? QDateTime::fromSecsSinceEpoch(qint64(v), QTimeZone::UTC).date().toString(Qt::ISODate) : tr("None");
         if (col.title == tr("Cohesion"))
             return QStringLiteral("%1%").arg(qRound(v * 100));
         if (std::floor(v) != v)
             return QString::number(v, 'f', 2);
         return QString::number(qint64(v));
-    case ValueRole: return v;
-    case FractionRole: return col.numeric && c < m_max.size() && m_max[c] > 0 ? v / m_max[c] : 0.0;
+    case ValueRole: return missing ? QVariant() : QVariant(v);
+    case FractionRole: return !missing && col.numeric && c < m_max.size() && m_max[c] > 0 ? v / m_max[c] : 0.0;
     case SymbolRole: return r.symbol;
     case FileRole: return r.file;
     case NumericRole: return col.numeric && c > 0;
@@ -769,6 +785,11 @@ void MetricsTable::reload()
         col(tr("Included by"), 0, 100);
         col(tr("Complexity"), 0, 96);
         col(tr("Errors"), 1, 76);
+        col(tr("Commits"), 0, 90);
+        col(tr("Added"), 0, 90);
+        col(tr("Removed"), 0, 90);
+        col(tr("Authors"), 0, 90);
+        col(tr("Last change (UTC)"), 0, 150);
         break;
     case Modules:
         col(tr("Module"), 0, 260, false);
@@ -843,6 +864,14 @@ void MetricsTable::reload()
                 r.values = {0, double(file.lines), double(file.codeLines), double(file.symbols.size()),
                             double(file.includes.size()), double(file.includedBy.size()), double(complexity[f]),
                             double(errors[f])};
+                const auto *activity = Hotspots::instance()->forFile(file.path);
+                const double unknown = std::numeric_limits<double>::quiet_NaN();
+                r.values.append(activity ? double(activity->commits) : unknown);
+                r.values.append(activity && !activity->binary ? double(activity->added) : unknown);
+                r.values.append(activity && !activity->binary ? double(activity->removed) : unknown);
+                r.values.append(activity ? double(activity->authors.size()) : unknown);
+                r.values.append(activity ? double(activity->lastChanged) : unknown);
+                r.binaryHistory = activity && activity->binary;
                 m_all.append(r);
             }
         } else {
@@ -881,6 +910,10 @@ void MetricsTable::applySort()
     std::stable_sort(m_rows.begin(), m_rows.end(), [&](const Row &a, const Row &b) {
         if (numeric) {
             const double x = a.values.value(c), y = b.values.value(c);
+            if (std::isnan(x) != std::isnan(y))
+                return !std::isnan(x);
+            if (std::isnan(x))
+                return a.name < b.name;
             if (x != y)
                 return m_descending ? x > y : x < y;
             return a.name < b.name;
@@ -904,15 +937,37 @@ QVariantMap MetricsTable::rowInfo(int row) const
 QString MetricsTable::toCsv() const
 {
     QString out;
-    out += headers().join(QLatin1Char(',')) + QLatin1Char('\n');
+    QStringList columns = headers();
+    QString historyScope;
+    if (m_mode == Files) {
+        columns << tr("Git history scope");
+        const auto &activity = Hotspots::instance()->activity();
+        if (Hotspots::instance()->ready()) {
+            historyScope = tr("revision=%1; since=%2; until=%3; %4; non-merge commits; pathname history; renames not followed")
+                .arg(activity.revision,
+                     QDateTime::fromSecsSinceEpoch(activity.since, QTimeZone::UTC).toString(Qt::ISODate),
+                     QDateTime::fromSecsSinceEpoch(activity.until, QTimeZone::UTC).toString(Qt::ISODate),
+                     activity.shallow ? tr("partial: shallow clone") : tr("complete for pathname scope"));
+        } else {
+            historyScope = Hotspots::instance()->summary();
+        }
+    }
+    auto quoted = [](QString v) {
+        if (v.contains(QLatin1Char(',')) || v.contains(QLatin1Char('"')) || v.contains(QLatin1Char('\n'))
+            || v.contains(QLatin1Char('\r')))
+            v = QLatin1Char('"') + v.replace(QLatin1Char('"'), QStringLiteral("\"\"")) + QLatin1Char('"');
+        return v;
+    };
+    for (QString &column : columns)
+        column = quoted(column);
+    out += columns.join(QLatin1Char(',')) + QLatin1Char('\n');
     for (int r = 0; r < m_rows.size(); ++r) {
         QStringList cells;
         for (int c = 0; c < m_columns.size(); ++c) {
-            QString v = data(index(r, c), Qt::DisplayRole).toString();
-            if (v.contains(QLatin1Char(',')) || v.contains(QLatin1Char('"')))
-                v = QLatin1Char('"') + v.replace(QLatin1Char('"'), QStringLiteral("\"\"")) + QLatin1Char('"');
-            cells << v;
+            cells << quoted(data(index(r, c), Qt::DisplayRole).toString());
         }
+        if (m_mode == Files)
+            cells << quoted(historyScope);
         out += cells.join(QLatin1Char(',')) + QLatin1Char('\n');
     }
     return out;

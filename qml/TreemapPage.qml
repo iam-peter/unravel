@@ -50,14 +50,18 @@ Item {
                     id: colorBox
                     styles: [Styles.FieldStyle.small]
                     model: [qsTr("Complexity"), qsTr("Callers (fan-in)"), qsTr("Uses (fan-out)"), qsTr("Looks unused"),
-                            qsTr("Findings"), qsTr("Nesting"), qsTr("Kind")]
+                            qsTr("Findings"), qsTr("Nesting"), qsTr("Kind"), qsTr("Git churn (files)")]
                     implicitWidth: 160
                 }
                 Item { Layout.fillWidth: true }
                 Label { text: map.legendLow; font: Theme.smallFont; color: Theme.textMuted }
                 Rectangle {
-                    visible: colorBox.currentIndex !== 6
-                    width: 110; height: 8; radius: 4
+                    visible: colorBox.currentIndex !== TreemapView.Kind
+                             && (colorBox.currentIndex !== TreemapView.Churn || Hotspots.ready)
+                    Layout.preferredWidth: 80
+                    Layout.minimumWidth: 30
+                    Layout.preferredHeight: 8
+                    radius: 4
                     gradient: Gradient {
                         orientation: Gradient.Horizontal
                         GradientStop { position: 0; color: Theme.viewColors.low }
@@ -67,6 +71,10 @@ Item {
                 }
                 Label { text: map.legendHigh; font: Theme.smallFont; color: Theme.textMuted }
             }
+        }
+        HistoryBar {
+            Layout.fillWidth: true
+            visible: colorBox.currentIndex === TreemapView.Churn
         }
         Rectangle {
             Layout.fillWidth: true
@@ -102,8 +110,13 @@ Item {
                     y: hover.point.position.y + 16
                     text: map.hoveredInfo.name === undefined ? "" :
                           map.hoveredInfo.name + "\n" + map.hoveredInfo.kind + " · " + Math.round(map.hoveredInfo.size)
-                          + (sizeBox.currentIndex === 0 ? qsTr(" lines") : "") + (map.hoveredInfo.symbol >= 0 && colorBox.currentIndex < 6
-                          ? " · " + colorBox.currentText.toLowerCase() + " " + Math.round(map.hoveredInfo.value * 10) / 10 : "")
+                          + (sizeBox.currentIndex === 0 ? qsTr(" lines") : "")
+                          + (colorBox.currentIndex === TreemapView.Churn
+                             ? (map.hoveredInfo.value >= 0
+                                ? (map.hoveredInfo.file >= 0 ? qsTr(" · %1 commits") : qsTr(" · max %1 commits per file")).arg(map.hoveredInfo.value)
+                                : qsTr(" · history unavailable"))
+                             : (map.hoveredInfo.symbol >= 0 && colorBox.currentIndex < TreemapView.Kind
+                                ? " · " + colorBox.currentText.toLowerCase() + " " + Math.round(map.hoveredInfo.value * 10) / 10 : ""))
                 }
             }
         }

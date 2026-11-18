@@ -441,6 +441,126 @@ private slots:
         QCOMPARE(History::mapLine(hunks, 6), 10);
     }
 
+    void fileActivity()
+    {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        QByteArray output;
+        qint64 time = 1700000000;
+        QString email = QStringLiteral("one@example.test");
+        auto git = [&](const QStringList &args) {
+            QProcess p;
+            p.setWorkingDirectory(dir.path());
+            auto env = QProcessEnvironment::systemEnvironment();
+            env.insert(QStringLiteral("GIT_AUTHOR_DATE"), QStringLiteral("@%1 +0000").arg(time));
+            env.insert(QStringLiteral("GIT_COMMITTER_DATE"), QStringLiteral("@%1 +0000").arg(time));
+            env.insert(QStringLiteral("GIT_AUTHOR_NAME"), QStringLiteral("Test"));
+            env.insert(QStringLiteral("GIT_AUTHOR_EMAIL"), email);
+            p.setProcessEnvironment(env);
+            p.start(QStringLiteral("git"), QStringList{QStringLiteral("-c"), QStringLiteral("user.name=Test"),
+                        QStringLiteral("-c"), QStringLiteral("user.email=committer@example.test"),
+                        QStringLiteral("-c"), QStringLiteral("commit.gpgsign=false"),
+                        QStringLiteral("-c"), QStringLiteral("core.autocrlf=false"),
+                        QStringLiteral("-c"), QStringLiteral("core.hooksPath=") + dir.filePath(QStringLiteral("no-hooks"))}
+                    + args);
+            QVERIFY(p.waitForFinished(10000));
+            const QByteArray error = p.readAllStandardError();
+            QVERIFY2(p.exitCode() == 0, error.constData());
+            output = p.readAllStandardOutput();
+        };
+        auto write = [&](const QString &path, const QByteArray &text) {
+            QFile f(dir.filePath(path));
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            QCOMPARE(f.write(text), text.size());
+        };
+        auto commit = [&](const QString &message) {
+            git({QStringLiteral("add"), QStringLiteral("-A")});
+            git({QStringLiteral("commit"), QStringLiteral("-qm"), message});
+        };
+        git({QStringLiteral("init"), QStringLiteral("-qb"), QStringLiteral("main")});
+        write(QStringLiteral("a.cpp"), "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\n");
+        write(QStringLiteral("deleted.cpp"), "gone\n");
+        write(QStringLiteral("renamed.cpp"), "same\n");
+        commit(QStringLiteral("old"));
+        time += 1000;
+        const qint64 since = time;
+        write(QStringLiteral("a.cpp"), "ONE\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nTEN\n");
+        write(QStringLiteral("space name.cpp"), "space\n");
+#ifndef Q_OS_WIN
+        const QString unusual = QStringLiteral("tab\tand\nnewline.cpp");
+        write(unusual, "unusual\n");
+#endif
+        write(QStringLiteral("binary.dat"), QByteArray("a\0b", 3));
+        git({QStringLiteral("rm"), QStringLiteral("deleted.cpp")});
+        git({QStringLiteral("mv"), QStringLiteral("renamed.cpp"), QStringLiteral("destination.cpp")});
+        commit(QStringLiteral("boundary, two hunks and rename"));
+        git({QStringLiteral("rev-parse"), QStringLiteral("HEAD")});
+        const QString boundary = QString::fromUtf8(output).trimmed();
+        time += 100;
+        git({QStringLiteral("checkout"), QStringLiteral("-qb"), QStringLiteral("topic")});
+        email = QStringLiteral("alias@example.test");
+        write(QStringLiteral("a.cpp"), "ONE\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nTEN\neleven\n");
+        commit(QStringLiteral("branch edit"));
+        time += 100;
+        git({QStringLiteral("checkout"), QStringLiteral("main")});
+        write(QStringLiteral("other.cpp"), "other\n");
+        commit(QStringLiteral("main edit"));
+        time += 100;
+        git({QStringLiteral("merge"), QStringLiteral("--no-ff"), QStringLiteral("-qm"),
+             QStringLiteral("merge"), QStringLiteral("topic")});
+        const qint64 until = time;
+        write(QStringLiteral(".mailmap"), "Test <one@example.test> <alias@example.test>\n");
+        write(QStringLiteral("a.cpp"), "uncommitted\n");
+
+        const History::Activity activity = History::fileActivity(dir.path(), QStringLiteral("HEAD"), since, until);
+        QVERIFY2(activity.ready(), qPrintable(activity.error));
+        QVERIFY(!activity.shallow);
+        const auto a = activity.files.value(QStringLiteral("a.cpp"));
+        QCOMPARE(a.commits, 2);
+        QCOMPARE(a.added, 3);
+        QCOMPARE(a.removed, 2);
+        QCOMPARE(a.authors.size(), 1);
+        QCOMPARE(a.lastChanged, since + 100);
+        QCOMPARE(activity.files.value(QStringLiteral("space name.cpp")).commits, 1);
+        QCOMPARE(activity.files.value(QStringLiteral("deleted.cpp")).removed, 1);
+        QCOMPARE(activity.files.value(QStringLiteral("renamed.cpp")).removed, 1);
+        QCOMPARE(activity.files.value(QStringLiteral("destination.cpp")).added, 1);
+        QCOMPARE(activity.files.value(QStringLiteral("destination.cpp")).commits, 1);
+        QVERIFY(activity.files.value(QStringLiteral("binary.dat")).binary);
+        QCOMPARE(activity.files.value(QStringLiteral("binary.dat")).added, 0);
+        QVERIFY(!activity.files.contains(QStringLiteral(".mailmap")));
+#ifndef Q_OS_WIN
+        QCOMPARE(activity.files.value(unusual).added, 1);
+#endif
+        const auto exact = History::fileActivity(dir.path(), boundary, since, since);
+        QVERIFY2(exact.ready(), qPrintable(exact.error));
+        QCOMPARE(exact.files.value(QStringLiteral("a.cpp")).commits, 1);
+        const auto empty = History::fileActivity(dir.path(), QStringLiteral("HEAD"), until + 1, until + 100);
+        QVERIFY2(empty.ready(), qPrintable(empty.error));
+        QVERIFY(empty.files.isEmpty());
+        const auto invalid = History::fileActivity(dir.path(), QStringLiteral("--invalid"), since, until);
+        QVERIFY(!invalid.ready());
+        QVERIFY(!invalid.error.isEmpty());
+        QVERIFY(!History::fileActivity(dir.path(), QStringLiteral("HEAD"), until, since).error.isEmpty());
+        const std::atomic_bool cancelled{true};
+        const auto stopped = History::fileActivity(dir.path(), QStringLiteral("HEAD"), since, until, &cancelled);
+        QVERIFY(stopped.cancelled);
+        QVERIFY(!stopped.ready());
+        QTemporaryDir outside;
+        const auto missing = History::fileActivity(outside.path(), QStringLiteral("HEAD"), since, until);
+        QVERIFY(!missing.ready());
+        QVERIFY(missing.repository.isEmpty());
+        QVERIFY(missing.error.isEmpty());
+
+        QTemporaryDir clone;
+        git({QStringLiteral("clone"), QStringLiteral("-q"), QStringLiteral("--depth=1"),
+             QUrl::fromLocalFile(dir.path()).toString(), clone.filePath(QStringLiteral("shallow"))});
+        const auto shallow = History::fileActivity(clone.filePath(QStringLiteral("shallow")),
+                                                   QStringLiteral("HEAD"), since, until);
+        QVERIFY2(shallow.ready(), qPrintable(shallow.error));
+        QVERIFY(shallow.shallow);
+    }
+
     void cleanArguments()
     {
         const QStringList argv = {"/usr/bin/c++", "-Iinclude", "-DX=1", "-o", "out.o", "-c", "src/a.cpp", "-MD", "-MF", "a.d",

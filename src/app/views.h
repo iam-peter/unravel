@@ -194,7 +194,7 @@ class TreemapView : public QQuickItem
     Q_PROPERTY(QString legendHigh READ legendHigh NOTIFY optionsChanged)
 
 public:
-    enum ColorMetric { Complexity, FanIn, FanOut, Unused, Findings, Nesting, Kind };
+    enum ColorMetric { Complexity, FanIn, FanOut, Unused, Findings, Nesting, Kind, Churn };
     Q_ENUM(ColorMetric)
     enum SizeMetric { Lines, Statements, Uniform };
     Q_ENUM(SizeMetric)
@@ -262,6 +262,7 @@ private:
     int m_activeSymbol = -1;
     QSet<qint32> m_findingSymbols;
     QHash<qint32, int> m_findingCount;
+    bool m_historyReady = false;
     std::shared_ptr<const Unravel::CodeModel> m_model;
 };
 

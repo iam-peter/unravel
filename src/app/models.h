@@ -176,6 +176,7 @@ private:
         QString name;
         QVector<double> values;
         QString location;
+        bool binaryHistory = false;
     };
     struct Column {
         QString title;

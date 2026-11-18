@@ -107,6 +107,29 @@ On the left the **project**: folders, files and what they declare, or the
 namespaces; bookmarks (Ctrl+D). **Search** (Ctrl+K) is fuzzy over every
 symbol and file (`inv::rep` finds `Inventory::report`).
 
+### Historical file metrics
+
+**Metrics → Files** adds Git commit counts, added and removed lines, distinct
+authors (resolved through `.mailmap`), and the last change date. Compare the
+existing complexity column with commit frequency to find review hotspots.
+**Treemap → Colour → Git churn (files)** colors whole files by touching commits;
+it does not attribute file history to individual functions.
+
+The history bar selects a rolling window (180 days by default, remembered per
+project), shows the resolved `HEAD` and UTC dates, and offers **Refresh** and
+**Cancel** without reindexing. Counts cover non-merge commits reachable from that
+revision, filtered by committer time, not just the 500 commits in Changes.
+Uncommitted edits are excluded. History is currently **pathname-based**:
+renames count as a deletion at the old name and an addition at the new one;
+earlier history is not carried across the rename.
+
+Shallow clones are labeled partial. Missing or failed history is shown as
+unavailable, not zero; binary changes have unknown line totals. The file-table
+CSV includes the revision, time bounds, coverage, and pathname policy. Git must
+support `--since-as-filter`; failed, oversized (over 128 MiB), or timed-out
+(two-minute) queries report an error rather than displaying incomplete totals.
+History results are held in memory; reopening or refreshing reads Git again.
+
 ## What the review looks for
 
 - **Parse errors**: files clang couldn't compile cleanly, so the picture of them may be incomplete

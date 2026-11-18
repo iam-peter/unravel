@@ -169,6 +169,7 @@ if(NOT UNRAVEL_CORE_ONLY)
             qml/BundlesPage.qml
             qml/TreemapPage.qml
             qml/MetricsView.qml
+            qml/HistoryBar.qml
             qml/FindingsView.qml
             qml/ChangesView.qml
             qml/FoldMenu.qml
@@ -178,6 +179,7 @@ if(NOT UNRAVEL_CORE_ONLY)
         SOURCES
             src/app/session.h src/app/session.cpp
             src/app/changes.h src/app/changes.cpp
+            src/app/hotspots.h src/app/hotspots.cpp
             src/app/models.h src/app/models.cpp
             src/app/graphscene.h src/app/graphscene.cpp
             src/app/views.h src/app/views.cpp
