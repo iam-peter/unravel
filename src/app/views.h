@@ -62,7 +62,7 @@ protected:
     QSGNode *updatePaintNode(QSGNode *old, UpdatePaintNodeData *) override;
 
 private:
-    QColor colorFor(int kind, bool cyclic) const;
+    QColor colorFor(int kind, bool cyclic, bool forbidden = false) const;
     void rebuildAll();
     QPointer<GraphScene> m_scene;
     qreal m_zoom = 1, m_panX = 0, m_panY = 0;
@@ -179,6 +179,9 @@ private:
 
 // A squarified treemap of folders, files and their classes and
 // functions: area for size, colour for a metric
+class ReviewFocus;
+class IncludeImpactModel;
+
 class TreemapView : public QQuickItem
 {
     Q_OBJECT
@@ -194,7 +197,7 @@ class TreemapView : public QQuickItem
     Q_PROPERTY(QString legendHigh READ legendHigh NOTIFY optionsChanged)
 
 public:
-    enum ColorMetric { Complexity, FanIn, FanOut, Unused, Findings, Nesting, Kind, Churn };
+    enum ColorMetric { Complexity, FanIn, FanOut, Unused, Findings, Nesting, Kind, Churn, Priority, HeaderImpact };
     Q_ENUM(ColorMetric)
     enum SizeMetric { Lines, Statements, Uniform };
     Q_ENUM(SizeMetric)
@@ -263,6 +266,8 @@ private:
     QSet<qint32> m_findingSymbols;
     QHash<qint32, int> m_findingCount;
     bool m_historyReady = false;
+    ReviewFocus *m_priority = nullptr;
+    IncludeImpactModel *m_impact = nullptr;
     std::shared_ptr<const Unravel::CodeModel> m_model;
 };
 
@@ -347,5 +352,6 @@ private:
     bool m_baseValid = false;   // the cells' nodes are up to date (hover drawn apart)
     QSGNode *m_sgBase = nullptr, *m_sgOverlay = nullptr;
     int m_maxCount = 1;
+    QSet<qint32> m_forbiddenLinks;
     std::shared_ptr<const Unravel::CodeModel> m_model;
 };

@@ -57,7 +57,16 @@ Item {
 
         HistoryBar {
             Layout.fillWidth: true
-            visible: modeBar.currentIndex === MetricsTable.Files
+            visible: modeBar.currentIndex === MetricsTable.Files || modeBar.currentIndex === MetricsTable.Functions
+        }
+        Label {
+            Layout.fillWidth: true
+            padding: 6
+            visible: modeBar.currentIndex === MetricsTable.Files || modeBar.currentIndex === MetricsTable.Functions
+            text: table.prioritySummary + qsTr(" | Files use the maximum function priority. See Review > Focus for components.")
+            font: Theme.smallFont
+            color: Theme.textMuted
+            wrapMode: Text.Wrap
         }
 
         HorizontalHeaderView {

@@ -4,11 +4,13 @@
 #include <QFile>
 #include <QProcess>
 #include <QFileInfo>
+#include <QJsonArray>
 #include <QTemporaryDir>
 #include <QTest>
 
 #include "analysis.h"
 #include "history.h"
+#include "focus.h"
 #include "indexer.h"
 #include "layout.h"
 #include "project.h"
@@ -526,9 +528,43 @@ private slots:
         QCOMPARE(activity.files.value(QStringLiteral("renamed.cpp")).removed, 1);
         QCOMPARE(activity.files.value(QStringLiteral("destination.cpp")).added, 1);
         QCOMPARE(activity.files.value(QStringLiteral("destination.cpp")).commits, 1);
+        const auto lineage = History::fileActivity(dir.path(), QStringLiteral("HEAD"), 0, until, nullptr, {}, false, true);
+        QVERIFY2(lineage.ready(), qPrintable(lineage.error));
+        QVERIFY(lineage.followedRenames);
+        QCOMPARE(lineage.files.value(QStringLiteral("destination.cpp")).commits, 2);
+        const QString nestedDirectory = dir.filePath(QStringLiteral("nested"));
+        QVERIFY(QDir().mkpath(nestedDirectory));
+        const auto nestedLineage = History::fileActivity(nestedDirectory, QStringLiteral("HEAD"), 0, until,
+                                                         nullptr, {}, false, true);
+        QVERIFY2(nestedLineage.ready(), qPrintable(nestedLineage.error));
+        QCOMPARE(nestedLineage.files.value(QStringLiteral("destination.cpp")).commits, 2);
+        QCOMPARE(lineage.files.value(QStringLiteral("destination.cpp")).added, 1);
         QVERIFY(activity.files.value(QStringLiteral("binary.dat")).binary);
         QCOMPARE(activity.files.value(QStringLiteral("binary.dat")).added, 0);
         QVERIFY(!activity.files.contains(QStringLiteral(".mailmap")));
+        QTemporaryDir cache;
+        const auto cold = History::fileActivity(dir.path(), QStringLiteral("HEAD"), since, until, nullptr, cache.path());
+        QVERIFY2(cold.ready(), qPrintable(cold.error));
+        QVERIFY(!cold.cached);
+        const auto warm = History::fileActivity(dir.path(), QStringLiteral("HEAD"), since, until, nullptr, cache.path());
+        QVERIFY(warm.cached);
+        QCOMPARE(warm.files.value(QStringLiteral("a.cpp")).added, a.added);
+        QCOMPARE(warm.files.value(QStringLiteral("a.cpp")).authors, a.authors);
+        const QStringList cachedFiles = QDir(cache.path()).entryList({QStringLiteral("*.json")}, QDir::Files);
+        QCOMPARE(cachedFiles.size(), 1);
+        QFile corrupt(QDir(cache.path()).filePath(cachedFiles.first()));
+        QVERIFY(corrupt.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        corrupt.write("{broken");
+        corrupt.close();
+        const auto recovered = History::fileActivity(dir.path(), QStringLiteral("HEAD"), since, until, nullptr, cache.path());
+        QVERIFY(recovered.ready());
+        QVERIFY(!recovered.cached);
+        QVERIFY(!recovered.cacheWarning.isEmpty());
+        write(QStringLiteral(".mailmap"), "");
+        const auto remapped = History::fileActivity(dir.path(), QStringLiteral("HEAD"), since, until, nullptr, cache.path());
+        QVERIFY(remapped.ready());
+        QVERIFY(!remapped.cached);
+        QCOMPARE(remapped.files.value(QStringLiteral("a.cpp")).authors.size(), 2);
 #ifndef Q_OS_WIN
         QCOMPARE(activity.files.value(unusual).added, 1);
 #endif
@@ -559,6 +595,124 @@ private slots:
                                                    QStringLiteral("HEAD"), since, until);
         QVERIFY2(shallow.ready(), qPrintable(shallow.error));
         QVERIFY(shallow.shallow);
+    }
+
+    void qtEventsAndCallEvidence()
+    {
+        QTemporaryDir dir;
+        const QString path = dir.filePath(QStringLiteral("events.cpp"));
+        QFile source(path);
+        QVERIFY(source.open(QIODevice::WriteOnly));
+        source.write(
+            "class QObject { public:\n"
+            " template<class S, class Signal, class R, class Slot>\n"
+            " static void connect(S*, Signal, R*, Slot) {} };\n"
+            "class Source { public: void ping() {} };\n"
+            "class Receiver { public: void handle() {} };\n"
+            "class Base { public: virtual void go() {} };\n"
+            "void dispatch(Base *p) { Base b; b.go(); p->go(); }\n"
+            "void addressSelf() { auto p = &addressSelf; }\n"
+            "void addressOnly() { auto p = &Receiver::handle; }\n"
+            "void setup(Source* s, Receiver* r) {\n"
+            " QObject::connect(s, &Source::ping, r, &Receiver::handle);\n"
+            " QObject::connect(s, &Source::ping, r, [r] { r->handle(); });\n"
+            " QObject::connect(s, \"ping\", r, \"handle\");\n"
+            " r->handle();\n"
+            "}\n");
+        source.close();
+        CodeModel model;
+        QVERIFY(Indexer::run(Project::discover(dir.path()), model).ok);
+        QCOMPARE(model.eventConnections.size(), 3);
+        const auto first = model.eventConnections.first();
+        QVERIFY(first.signal >= 0);
+        QVERIFY(first.target >= 0);
+        QCOMPARE(model.symbols[first.signal].qualified, QStringLiteral("Source::ping"));
+        QCOMPARE(model.symbols[first.target].qualified, QStringLiteral("Receiver::handle"));
+        QVERIFY(first.loc.valid());
+        QCOMPARE(model.eventConnections[1].target, -1);
+        QVERIFY(!model.eventConnections[1].limitation.isEmpty());
+        QCOMPARE(model.eventConnections[2].signal, -1);
+        for (int i = 0; i < model.symbols.size(); ++i) {
+            if (model.symbols[i].qualified == QLatin1String("addressOnly"))
+                QVERIFY(Analysis::callsFrom(model, i, true).isEmpty());
+            if (model.symbols[i].qualified == QLatin1String("setup")) {
+                for (const auto &call : Analysis::callsFrom(model, i, true))
+                    QVERIFY(model.symbols[call.callee].qualified != QLatin1String("Source::ping"));
+            }
+            if (model.symbols[i].qualified == QLatin1String("dispatch")) {
+                bool found = false;
+                for (const auto &call : Analysis::callsFrom(model, i, true)) {
+                    if (model.symbols[call.callee].qualified == QLatin1String("Base::go")) {
+                        QCOMPARE(call.count, 2);
+                        QVERIFY(call.virtualCall);
+                        found = true;
+                    }
+                }
+                QVERIFY(found);
+            }
+            if (model.symbols[i].qualified == QLatin1String("addressSelf")) {
+                QVERIFY(Analysis::callsFrom(model, i, true).isEmpty());
+                for (const auto &finding : Analysis::analyze(model).findings)
+                    QVERIFY(finding.kind != Analysis::FindingKind::Recursion || !finding.symbols.contains(i));
+            }
+        }
+        const QString saved = dir.filePath(QStringLiteral("events.idx"));
+        QVERIFY(model.save(saved));
+        CodeModel loaded;
+        QVERIFY(loaded.load(saved));
+        QCOMPARE(loaded.eventConnections.size(), model.eventConnections.size());
+        QCOMPARE(loaded.eventConnections.first().loc, first.loc);
+        QCOMPARE(loaded.eventConnections.first().signal, first.signal);
+    }
+
+    void reviewFocus()
+    {
+        CodeModel model;
+        model.root = QDir::tempPath();
+        const int file = model.addFile(model.root + QStringLiteral("/focus.cpp"));
+        model.files[file].project = true;
+        for (int i = 0; i < 25; ++i) {
+            const int id = model.addSymbol(QStringLiteral("function:%1").arg(i));
+            auto &symbol = model.symbols[id];
+            symbol.kind = SymbolKind::Function;
+            symbol.flags = Defined;
+            symbol.name = symbol.qualified = QStringLiteral("f%1").arg(i, 2, 10, QLatin1Char('0'));
+            symbol.def = {file, i + 1, 1, i + 1, 10};
+            symbol.metrics.complexity = i == 24 ? 90 : 1;
+        }
+        model.refs.append({0, 3, RefKind::Call, 0, {file, 1, 1, 1, 2}});
+        model.finalize();
+        const auto result = Focus::rank(model);
+        QCOMPARE(result.entries.size(), 20);
+        QCOMPARE(result.eligible, 25);
+        QCOMPARE(result.entries.first().symbol, 24);
+        QVERIFY(result.entries.first().priority > 0);
+        QCOMPARE(result.entries[1].symbol, 0);
+        QSet<qint32> unique;
+        for (const auto &entry : result.entries)
+            unique.insert(entry.symbol);
+        QCOMPARE(unique.size(), 20);
+        QCOMPARE(Focus::json(model, result).value(QStringLiteral("functions")).toArray().size(), 20);
+        Focus::Options options;
+        options.changedOnly = true;
+        QVERIFY(Focus::rank(model, nullptr, options).entries.isEmpty());
+        options.touched = {3};
+        QCOMPARE(Focus::rank(model, nullptr, options).entries.first().symbol, 3);
+        options.impactDepth = 1;
+        const auto impact = Focus::rank(model, nullptr, options);
+        QCOMPARE(impact.entries.size(), 2);
+        QCOMPARE(Focus::json(model, impact).value(QStringLiteral("potentialImpactDepth")).toInt(), 1);
+        QVERIFY(Focus::markdown(model, impact).contains(QStringLiteral("not proven execution impact")));
+        History::Activity history;
+        history.repository = model.root;
+        history.revision = QStringLiteral("test-revision");
+        history.shallow = true;
+        history.files[QStringLiteral("focus.cpp")].commits = 3;
+        const auto historical = Focus::rank(model, &history);
+        QVERIFY(historical.historical);
+        QVERIFY(historical.partial);
+        QCOMPARE(historical.entries.first().history, 2.0);
+        QVERIFY(Focus::markdown(model, historical).contains(QStringLiteral("file-level pathname history proxy")));
     }
 
     void cleanArguments()

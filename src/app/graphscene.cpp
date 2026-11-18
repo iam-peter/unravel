@@ -10,6 +10,7 @@
 #include <cmath>
 
 #include "changes.h"
+#include "contracts.h"
 #include "layout.h"
 #include "session.h"
 
@@ -381,6 +382,7 @@ QVariantMap GraphScene::edgeInfo(int e) const
     out[QStringLiteral("kindName")] = refKindName(RefKind(edge.kind));
     out[QStringLiteral("count")] = edge.count;
     out[QStringLiteral("cyclic")] = edge.cyclic;
+    out[QStringLiteral("forbidden")] = edge.forbidden;
     out[QStringLiteral("from")] = edge.fromSymbol;
     out[QStringLiteral("to")] = edge.toSymbol;
     auto nodeTitle = [&](int node) {
@@ -466,7 +468,8 @@ QString GraphScene::toSvg(const QVariantMap &colors) const
             else
                 d += QStringLiteral("%1 %2 ").arg(el.x).arg(el.y);
         }
-        const QString stroke = e.cyclic ? color(QStringLiteral("cycle"), "#d33")
+        const QString stroke = e.forbidden ? color(QStringLiteral("violation"), "#b45309")
+                              : e.cyclic ? color(QStringLiteral("cycle"), "#d33")
                                         : color(QString::fromLatin1(kindKeys[std::clamp(e.kind, 0, 8)]), "#888");
         t << "<path d=\"" << d << "\" fill=\"none\" stroke=\"" << stroke << "\" stroke-width=\""
           << std::min(1.0 + std::log2(double(std::max(1, e.count))), 5.0) << "\"" << (e.dashed ? " stroke-dasharray=\"5 4\"" : "")
@@ -1536,6 +1539,7 @@ DependencyScene::DependencyScene(QObject *parent)
     : GraphScene(parent)
 {
     connect(this, &DependencyScene::inputChanged, this, &GraphScene::scheduleBuild);
+    connect(Contracts::instance(), &Contracts::changed, this, &GraphScene::scheduleBuild);
 }
 
 void DependencyScene::setLevel(int l)
@@ -1694,6 +1698,7 @@ void DependencyScene::build()
     o.layerGap = m_vertical ? 80 : 130;
     o.nodeGap = m_vertical ? 26 : 16;
     Layout::layered(lnodes, links, o);
+    const auto forbiddenLinks = Contracts::instance()->violatingLinks(m, g, m_moduleDepth);
     QSet<int> cyclicComponents;
     for (int i : std::as_const(keep)) {
         const int k = index.value(i);
@@ -1768,6 +1773,7 @@ void DependencyScene::build()
         }
         e.kind = best;
         e.cyclic = gl.cyclic;
+        e.forbidden = forbiddenLinks.contains(linkOf[i]);
         e.bothWays = g.linkIndex(gl.to, gl.from) >= 0;
         e.fromNode = l.from;
         e.toNode = l.to;

@@ -14,6 +14,7 @@
 #include "changes.h"
 #include "highlight.h"
 #include "hotspots.h"
+#include "reviewfocus.h"
 #include "session.h"
 
 using namespace Unravel;
@@ -619,6 +620,12 @@ QModelIndex ProjectTree::indexOfSymbol(int symbol)
 MetricsTable::MetricsTable(QObject *parent)
     : QAbstractTableModel(parent)
 {
+    m_priority = new ReviewFocus(this);
+    m_priority->setShowAll(true);
+    connect(m_priority, &ReviewFocus::changed, this, [this] {
+        if (m_mode == Functions || m_mode == Files)
+            reload();
+    });
     connect(Session::instance(), &Session::modelChanged, this, &MetricsTable::reload);
     connect(Hotspots::instance(), &Hotspots::changed, this, [this] {
         if (m_mode == Files)
@@ -762,6 +769,7 @@ void MetricsTable::reload()
         col(tr("Callers"));
         col(tr("Callees"));
         col(tr("Location"), 0, 240, false);
+        col(tr("Review priority"), 0, 130);
         break;
     case Classes:
         col(tr("Class"), 0, 280, false);
@@ -790,6 +798,7 @@ void MetricsTable::reload()
         col(tr("Removed"), 0, 90);
         col(tr("Authors"), 0, 90);
         col(tr("Last change (UTC)"), 0, 150);
+        col(tr("Max review priority"), 0, 160);
         break;
     case Modules:
         col(tr("Module"), 0, 260, false);
@@ -825,6 +834,8 @@ void MetricsTable::reload()
                 r.location = m.locationText(s.def);
                 r.values = {0, double(mm.lines), double(mm.complexity), double(mm.cognitive), double(mm.nesting),
                             double(mm.params), double(mm.statements), double(s.fanIn), double(s.fanOut), 0};
+                const double priority = m_priority->priorityFor(i);
+                r.values.append(priority < 0 ? std::numeric_limits<double>::quiet_NaN() : priority);
                 m_all.append(r);
             }
         } else if (m_mode == Classes) {
@@ -871,6 +882,8 @@ void MetricsTable::reload()
                 r.values.append(activity && !activity->binary ? double(activity->removed) : unknown);
                 r.values.append(activity ? double(activity->authors.size()) : unknown);
                 r.values.append(activity ? double(activity->lastChanged) : unknown);
+                const double priority = m_priority->filePriority(f);
+                r.values.append(priority < 0 ? unknown : priority);
                 r.binaryHistory = activity && activity->binary;
                 m_all.append(r);
             }
@@ -943,14 +956,17 @@ QString MetricsTable::toCsv() const
         columns << tr("Git history scope");
         const auto &activity = Hotspots::instance()->activity();
         if (Hotspots::instance()->ready()) {
-            historyScope = tr("revision=%1; since=%2; until=%3; %4; non-merge commits; pathname history; renames not followed")
+            historyScope = tr("revision=%1; since=%2; until=%3; %4; non-merge commits; %5")
                 .arg(activity.revision,
                      QDateTime::fromSecsSinceEpoch(activity.since, QTimeZone::UTC).toString(Qt::ISODate),
                      QDateTime::fromSecsSinceEpoch(activity.until, QTimeZone::UTC).toString(Qt::ISODate),
-                     activity.shallow ? tr("partial: shallow clone") : tr("complete for pathname scope"));
+                     activity.shallow ? tr("partial: shallow clone") : tr("complete for selected history scope"),
+                     activity.followedRenames ? tr("Git --follow lineage (heuristic)") : tr("pathname history; renames not followed"));
         } else {
             historyScope = Hotspots::instance()->summary();
         }
+        if (m_mode == Files || m_mode == Functions)
+            columns << tr("Review priority scope");
     }
     auto quoted = [](QString v) {
         if (v.contains(QLatin1Char(',')) || v.contains(QLatin1Char('"')) || v.contains(QLatin1Char('\n'))
@@ -968,9 +984,16 @@ QString MetricsTable::toCsv() const
         }
         if (m_mode == Files)
             cells << quoted(historyScope);
+        if (m_mode == Files || m_mode == Functions)
+            cells << quoted(prioritySummary());
         out += cells.join(QLatin1Char(',')) + QLatin1Char('\n');
     }
     return out;
+}
+
+QString MetricsTable::prioritySummary() const
+{
+    return m_priority ? m_priority->summary() : tr("Review priority unavailable");
 }
 
 // --- FindingsList ----------------------------------------------------------------------

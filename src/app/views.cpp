@@ -18,6 +18,9 @@
 #include <cmath>
 
 #include "hotspots.h"
+#include "contracts.h"
+#include "reviewfocus.h"
+#include "includeimpactmodel.h"
 #include "layout.h"
 #include "session.h"
 #include "sgutil.h"
@@ -266,8 +269,10 @@ void EdgeLayer::setHoveredEdge(int e)
     update();
 }
 
-QColor EdgeLayer::colorFor(int kind, bool cyclic) const
+QColor EdgeLayer::colorFor(int kind, bool cyclic, bool forbidden) const
 {
+    if (forbidden)
+        return colorOf(m_colors, QStringLiteral("violation"), QColor(180, 83, 9));
     if (cyclic)
         return colorOf(m_colors, QStringLiteral("cycle"), QColor(220, 60, 60));
     return colorOf(m_colors, kindKey(kind));
@@ -304,7 +309,7 @@ QSGNode *EdgeLayer::updatePaintNode(QSGNode *old, UpdatePaintNodeData *)
         const double minWidth = 1.0 / std::max(0.05, m_zoom);
         QHash<QRgb, QVector<Vertex>> batches;
         for (const GraphScene::SceneEdge &e : edges) {
-            const QColor c = colorFor(e.kind, e.cyclic);
+            const QColor c = colorFor(e.kind, e.cyclic, e.forbidden);
             addEdge(batches[c.rgba()], e, std::max(edgeWidth(e.count), minWidth));
         }
         for (auto it = batches.cbegin(); it != batches.cend(); ++it) {
@@ -342,7 +347,7 @@ QSGNode *EdgeLayer::updatePaintNode(QSGNode *old, UpdatePaintNodeData *)
                     continue;
                 const GraphScene::SceneEdge &e = edges[i];
                 const double width = std::max(edgeWidth(e.count), minWidth) + 0.8 + (i == m_hoveredEdge ? 1 : 0);
-                addEdge(batches[colorFor(e.kind, e.cyclic).rgba()], e, width);
+                addEdge(batches[colorFor(e.kind, e.cyclic, e.forbidden).rgba()], e, width);
             }
             for (auto it = batches.cbegin(); it != batches.cend(); ++it) {
                 if (!it->isEmpty())
@@ -1109,6 +1114,21 @@ void TreemapView::setColorMetric(int m)
     if (m == m_colorMetric)
         return;
     m_colorMetric = m;
+    auto refresh = [this] {
+        if (isVisible())
+            rebuild();
+        else
+            m_dirty = true;
+    };
+    if (m == Priority && !m_priority) {
+        m_priority = new ReviewFocus(this);
+        m_priority->setShowAll(true);
+        connect(m_priority, &ReviewFocus::changed, this, refresh);
+    }
+    if (m == HeaderImpact && !m_impact) {
+        m_impact = new IncludeImpactModel(this);
+        connect(m_impact, &IncludeImpactModel::coverageChanged, this, refresh);
+    }
     emit optionsChanged();
     rebuild();
 }
@@ -1173,6 +1193,8 @@ QString TreemapView::legendLow() const
     case Unused: return tr("used");
     case Kind: return tr("by kind");
     case Churn: return m_historyReady ? QStringLiteral("0") : tr("unavailable");
+    case Priority: return m_priority && !m_priority->busy() ? QStringLiteral("0") : tr("computing");
+    case HeaderImpact: return m_impact && m_impact->available() ? QStringLiteral("0") : tr("unavailable");
     default: return QStringLiteral("0");
     }
 }
@@ -1219,6 +1241,13 @@ double TreemapView::metricOf(qint32 s) const
     }
     case Kind: return double(int(sym.kind));
     case Churn: return 0; // historical activity is shown at file level only
+    case HeaderImpact: return -1;
+    case Priority: {
+        double value = m_priority ? m_priority->priorityFor(s) : -1;
+        for (qint32 child : sym.children)
+            value = std::max(value, m_priority ? m_priority->priorityFor(child) : -1);
+        return value;
+    }
     }
     return 0;
 }
@@ -1293,6 +1322,11 @@ void TreemapView::rebuild()
             fn.value = activity ? double(activity->commits) : -1;
             maxValue = std::max(maxValue, fn.value);
         }
+        if (m_colorMetric == HeaderImpact || m_colorMetric == Priority) {
+            fn.value = m_colorMetric == HeaderImpact ? (m_impact ? m_impact->rankedImpact(f) : -1)
+                                                     : (m_priority ? m_priority->filePriority(f) : -1);
+            maxValue = std::max(maxValue, fn.value);
+        }
         fn.depth = m_tree[dir].depth + 1;
         m_tree.append(fn);
         const int fileNode = int(m_tree.size() - 1);
@@ -1337,7 +1371,7 @@ void TreemapView::rebuild()
             }
             if (size <= 0)
                 continue;
-            if (m_colorMetric == Churn) {
+            if (m_colorMetric == Churn || m_colorMetric == HeaderImpact) {
                 sum += size;
                 continue;
             }
@@ -1366,11 +1400,11 @@ void TreemapView::rebuild()
         if (t.kind != -3)
             return t.size;
         double s = 0;
-        if (m_colorMetric == Churn)
+        if (m_colorMetric == Churn || m_colorMetric == HeaderImpact || m_colorMetric == Priority)
             t.value = -1;
         for (int c : std::as_const(t.children)) {
             s += total(c);
-            if (m_colorMetric == Churn)
+            if (m_colorMetric == Churn || m_colorMetric == HeaderImpact || m_colorMetric == Priority)
                 t.value = std::max(t.value, m_tree[c].value);
         }
         m_tree[n].size = s;
@@ -1417,7 +1451,7 @@ void TreemapView::layoutNode(int n, const QRectF &r, int depth)
 
 QColor TreemapView::colorFor(const TNode &n) const
 {
-    if (m_colorMetric == Churn && n.value < 0)
+    if ((m_colorMetric == Churn || m_colorMetric == Priority || m_colorMetric == HeaderImpact) && n.value < 0)
         return QColor(128, 128, 128);
     const QColor low = colorOf(m_colors, QStringLiteral("low"), QColor(90, 180, 110));
     const QColor midc = colorOf(m_colors, QStringLiteral("mid"), QColor(230, 190, 60));
@@ -1480,7 +1514,8 @@ QSGNode *TreemapView::updatePaintNode(QSGNode *old, UpdatePaintNodeData *)
             const QRectF r = t.rect;
             if (r.width() < 1 || r.height() < 1)
                 return;
-            if (t.kind == -2 && m_colorMetric == Churn) {
+            if (t.kind == -2 && (m_colorMetric == Churn || m_colorMetric == HeaderImpact
+                                || (m_colorMetric == Priority && t.children.isEmpty()))) {
                 const QColor c = colorFor(t);
                 mesh.gradient(r.adjusted(0.5, 0.5, -0.5, -0.5), c.lighter(118), c.darker(112));
                 if (r.width() > 36 && r.height() > 14)
@@ -1609,6 +1644,12 @@ MatrixView::MatrixView(QQuickItem *parent)
         else
             m_dirty = true;
     });
+    connect(Contracts::instance(), &Contracts::changed, this, [this] {
+        if (isVisible())
+            rebuild();
+        else
+            m_dirty = true;
+    });
     rebuild();
 }
 
@@ -1644,6 +1685,7 @@ void MatrixView::rebuild()
     m_baseValid = false;
     m_order.clear();
     m_position.clear();
+    m_forbiddenLinks.clear();
     m_selectedLink = -1;
     m_selRow = m_selCol = -1;
     m_hoverRow = m_hoverCol = -1;
@@ -1655,6 +1697,7 @@ void MatrixView::rebuild()
     m_graph = Analysis::dependencyGraph(*m_model, Analysis::Level(std::clamp(m_level, 0, 2)), m_moduleDepth, false, {},
                                         Session::instance()->foldedFolders());
     m_order = Analysis::dependencyOrder(m_graph);
+    m_forbiddenLinks = Contracts::instance()->violatingLinks(*m_model, m_graph, m_moduleDepth);
     m_position = QVector<int>(m_graph.names.size(), -1);
     for (int i = 0; i < m_order.size(); ++i)
         m_position[m_order[i]] = i;
@@ -1783,13 +1826,17 @@ QSGNode *MatrixView::updatePaintNode(QSGNode *old, UpdatePaintNodeData *)
         font.setPixelSize(std::clamp(int(c * 0.75), 7, 11));
         QSGTextNode *countsDark = Sg::textNode(window(), text);
         QSGTextNode *countsLight = Sg::textNode(window(), QColor(255, 255, 255));
-        for (const auto &l : m_graph.links) {
+        for (qsizetype link = 0; link < m_graph.links.size(); ++link) {
+            const auto &l = m_graph.links[link];
             const int r = m_position[l.from], col = m_position[l.to];
             if (r < 0 || col < 0)
                 continue;
             const int count = l.count + l.includes;
             const double t = std::log2(1.0 + count) / std::log2(1.0 + m_maxCount);
             mesh.rect(QRectF(L + col * c + 1, T + r * c + 1, c - 1, c - 1), withAlpha(l.cyclic ? cycle : accent, 0.2 + 0.8 * t));
+            if (m_forbiddenLinks.contains(qint32(link)))
+                mesh.frame(QRectF(L + col * c + 1, T + r * c + 1, c - 1, c - 1), 2,
+                           colorOf(m_colors, QStringLiteral("violation"), QColor(180, 83, 9)));
             if (c >= 14)
                 Sg::addText(t > 0.55 ? countsLight : countsDark, count > 999 ? QStringLiteral("k") : QString::number(count),
                             font, QRectF(L + col * c, T + r * c, c, c), Qt::AlignCenter, false);
@@ -1871,6 +1918,7 @@ void MatrixView::hover(qreal x, qreal y)
                     kinds << QStringLiteral("%1 %2").arg(l.kinds[k]).arg(refKindName(RefKind(k)));
             }
             m_hoveredInfo[QStringLiteral("cyclic")] = l.cyclic;
+            m_hoveredInfo[QStringLiteral("forbidden")] = m_forbiddenLinks.contains(li);
         }
         m_hoveredInfo[QStringLiteral("count")] = count;
         m_hoveredInfo[QStringLiteral("includes")] = includes;

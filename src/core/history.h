@@ -43,19 +43,30 @@ struct FileActivity {
 
 struct Activity {
     QString repository, revision, error;
+    QString cacheWarning;
     qint64 since = 0, until = 0;
-    QHash<QString, FileActivity> files; // repository-relative paths, not rename lineages
+    QHash<QString, FileActivity> files; // repository-relative keys; current paths in follow mode
     bool shallow = false;
     bool cancelled = false;
+    bool cached = false;
+    bool followedRenames = false; // Git --follow's heuristic, not proven identity
 
     bool ready() const { return !repository.isEmpty() && !revision.isEmpty() && error.isEmpty() && !cancelled; }
 };
 
 // Non-merge commits reachable from revision, inclusive committer-time bounds.
-// Counts changes at each pathname; renames are a deletion and an addition.
+// Default: pathname counts. Optional --follow mode uses Git's rename heuristic.
 // An empty repository with no error means dir is not in a Git worktree.
 Activity fileActivity(const QString &dir, const QString &revision, qint64 since, qint64 until,
-                      const std::atomic_bool *cancel = nullptr);
+                      const std::atomic_bool *cancel = nullptr, const QString &cacheDirectory = {},
+                      bool refreshCache = false, bool followRenames = false);
+
+struct Blame {
+    QString text, error;
+    bool cancelled = false;
+};
+Blame blame(const QString &directory, const QString &path, int firstLine,
+            const std::atomic_bool *cancel = nullptr);
 
 // One hunk of a unified diff with no context: `oldCount` lines from
 // `oldStart` became `newCount` lines from `newStart`

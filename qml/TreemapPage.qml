@@ -50,8 +50,9 @@ Item {
                     id: colorBox
                     styles: [Styles.FieldStyle.small]
                     model: [qsTr("Complexity"), qsTr("Callers (fan-in)"), qsTr("Uses (fan-out)"), qsTr("Looks unused"),
-                            qsTr("Findings"), qsTr("Nesting"), qsTr("Kind"), qsTr("Git churn (files)")]
-                    implicitWidth: 160
+                            qsTr("Findings"), qsTr("Nesting"), qsTr("Kind"), qsTr("Git churn (files)"),
+                            qsTr("Review priority"), qsTr("Header impact (files)")]
+                    implicitWidth: 190
                 }
                 Item { Layout.fillWidth: true }
                 Label { text: map.legendLow; font: Theme.smallFont; color: Theme.textMuted }
@@ -74,7 +75,17 @@ Item {
         }
         HistoryBar {
             Layout.fillWidth: true
-            visible: colorBox.currentIndex === TreemapView.Churn
+            visible: colorBox.currentIndex === TreemapView.Churn || colorBox.currentIndex === TreemapView.Priority
+        }
+        Label {
+            Layout.fillWidth: true
+            Layout.margins: 6
+            visible: colorBox.currentIndex === TreemapView.Priority || colorBox.currentIndex === TreemapView.HeaderImpact
+            text: colorBox.currentIndex === TreemapView.Priority
+                  ? qsTr("Heuristic v1; file-history proxy when available, static otherwise. File/folder values are maxima; gray means unavailable. See Review > Focus for evidence.")
+                  : qsTr("Distinct indexed translation units, not measured build time. Gray: non-header/unavailable; folder values are maxima. See Review > Header impact for coverage and witnesses.")
+            color: Theme.textMuted
+            wrapMode: Text.Wrap
         }
         Rectangle {
             Layout.fillWidth: true
@@ -115,6 +126,8 @@ Item {
                              ? (map.hoveredInfo.value >= 0
                                 ? (map.hoveredInfo.file >= 0 ? qsTr(" · %1 commits") : qsTr(" · max %1 commits per file")).arg(map.hoveredInfo.value)
                                 : qsTr(" · history unavailable"))
+                             : colorBox.currentIndex === TreemapView.Priority || colorBox.currentIndex === TreemapView.HeaderImpact
+                               ? (map.hoveredInfo.value >= 0 ? " · " + colorBox.currentText + " " + Math.round(map.hoveredInfo.value * 100) / 100 : qsTr(" · unavailable"))
                              : (map.hoveredInfo.symbol >= 0 && colorBox.currentIndex < TreemapView.Kind
                                 ? " · " + colorBox.currentText.toLowerCase() + " " + Math.round(map.hoveredInfo.value * 10) / 10 : ""))
                 }

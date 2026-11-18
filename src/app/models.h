@@ -13,6 +13,7 @@
 #include "analysis.h"
 #include "model.h"
 
+class ReviewFocus;
 // The list, tree and table models the QML views show, all over the
 // Session's code model and rebuilt when it changes.
 
@@ -137,6 +138,7 @@ class MetricsTable : public QAbstractTableModel
     Q_PROPERTY(QStringList headers READ headers NOTIFY modeChanged)
     Q_PROPERTY(QVariantList columnWidths READ columnWidths NOTIFY modeChanged)
     Q_PROPERTY(int count READ count NOTIFY countChanged)
+    Q_PROPERTY(QString prioritySummary READ prioritySummary NOTIFY countChanged)
 
 public:
     enum Roles { ValueRole = Qt::UserRole + 1, FractionRole, SymbolRole, FileRole, NumericRole, HotRole };
@@ -159,6 +161,7 @@ public:
     QStringList headers() const;
     QVariantList columnWidths() const;
     int count() const { return int(m_rows.size()); }
+    QString prioritySummary() const;
 
     Q_INVOKABLE void sortBy(int column);
     Q_INVOKABLE QVariantMap rowInfo(int row) const;
@@ -190,6 +193,7 @@ private:
     QVector<Row> m_all, m_rows;
     QVector<double> m_max;
     int m_mode = Functions;
+    ReviewFocus *m_priority = nullptr;
     QString m_filter;
     int m_sortColumn = 2;
     bool m_descending = true;

@@ -400,6 +400,7 @@ struct Unit {
     QHash<QString, qint32> usrIds;
     QHash<qint32, qint32> parents;   // local ids
     QVector<Reference> refs;
+    QVector<EventConnection> eventConnections;
     QVector<Diagnostic> diags;
     QVector<CodeModel::NameUse> macroNames;   // local ids
     qint32 mainFile = -1;
@@ -904,6 +905,83 @@ struct Unit {
         }
     }
 
+    QString expression(CXCursor cursor)
+    {
+        CXToken *tokens = nullptr;
+        unsigned count = 0;
+        clang_tokenize(tu, clang_getCursorExtent(cursor), &tokens, &count);
+        QStringList words;
+        for (unsigned i = 0; i < count; ++i)
+            words << take(clang_getTokenSpelling(tu, tokens[i]));
+        clang_disposeTokens(tu, tokens, count);
+        return words.join(QLatin1Char(' '));
+    }
+
+    static CXCursor methodReference(CXCursor cursor)
+    {
+        CXCursor found = clang_getNullCursor();
+        if (clang_getCursorKind(cursor) == CXCursor_LambdaExpr || clang_getCursorKind(cursor) == CXCursor_CallExpr)
+            return found;
+        const CXCursor referenced = clang_getCursorReferenced(cursor);
+        if (clang_getCursorKind(referenced) == CXCursor_CXXMethod)
+            return referenced;
+        clang_visitChildren(cursor, [](CXCursor child, CXCursor, CXClientData data) {
+            auto *result = static_cast<CXCursor *>(data);
+            const CXCursor candidate = methodReference(child);
+            if (!clang_Cursor_isNull(candidate)) {
+                *result = candidate;
+                return CXChildVisit_Break;
+            }
+            return CXChildVisit_Continue;
+        }, &found);
+        return found;
+    }
+
+    void connections()
+    {
+        clang_visitChildren(clang_getTranslationUnitCursor(tu), [](CXCursor cursor, CXCursor, CXClientData data) {
+            auto *unit = static_cast<Unit *>(data);
+            if (unit->cancel && unit->cancel->load())
+                return CXChildVisit_Break;
+            const auto at = unit->location(clang_getCursorLocation(cursor));
+            if (at.file >= 0 && !unit->ours(at.file))
+                return CXChildVisit_Continue;
+            if (clang_getCursorKind(cursor) != CXCursor_CallExpr)
+                return CXChildVisit_Recurse;
+            const CXCursor callee = clang_getCursorReferenced(cursor);
+            if (take(clang_getCursorSpelling(callee)) != QLatin1String("connect")
+                || take(clang_getCursorSpelling(clang_getCursorSemanticParent(callee))) != QLatin1String("QObject"))
+                return CXChildVisit_Recurse;
+            const int count = clang_Cursor_getNumArguments(cursor);
+            if (count < 3)
+                return CXChildVisit_Recurse;
+            EventConnection event;
+            event.loc = unit->extent(cursor);
+            const CXCursor signal = methodReference(clang_Cursor_getArgument(cursor, 1));
+            const int targetIndex = count >= 4 ? 3 : 2;
+            const CXCursor targetArg = clang_Cursor_getArgument(cursor, targetIndex);
+            const CXCursor target = methodReference(targetArg);
+            if (!clang_Cursor_isNull(signal))
+                event.signal = unit->symbolFor(signal);
+            if (!clang_Cursor_isNull(target))
+                event.target = unit->symbolFor(target);
+            event.targetLoc = unit->extent(targetArg);
+            event.sender = unit->expression(clang_Cursor_getArgument(cursor, 0));
+            if (count >= 4)
+                event.receiver = unit->expression(clang_Cursor_getArgument(cursor, 2));
+            event.delivery = count >= 5 ? unit->expression(clang_Cursor_getArgument(cursor, 4))
+                                        : QStringLiteral("AutoConnection (runtime thread affinity)");
+            if (event.delivery.isEmpty())
+                event.delivery = QStringLiteral("Unresolved delivery type");
+            if (event.signal < 0)
+                event.limitation = QStringLiteral("String-based or unresolved signal; event topology is incomplete");
+            else if (event.target < 0)
+                event.limitation = QStringLiteral("Functor/lambda or unresolved target; navigate its source, not a proven callable symbol");
+            unit->eventConnections.append(event);
+            return CXChildVisit_Recurse;
+        }, this);
+    }
+
     // Macros: clang's indexer leaves them out, the preprocessing record has them
     void macros()
     {
@@ -1121,6 +1199,14 @@ void merge(Unit &u, CodeModel &model)
     }
     for (const CodeModel::NameUse &n : std::as_const(u.macroNames))
         model.macroNameUses.append({symMap[n.from], n.name, mapLoc(n.loc)});
+    for (const auto &event : std::as_const(u.eventConnections)) {
+        auto mapped = event;
+        mapped.signal = event.signal >= 0 ? symMap[event.signal] : -1;
+        mapped.target = event.target >= 0 ? symMap[event.target] : -1;
+        mapped.loc = mapLoc(event.loc);
+        mapped.targetLoc = mapLoc(event.targetLoc);
+        model.eventConnections.append(mapped);
+    }
     for (const Diagnostic &d : std::as_const(u.diags)) {
         Diagnostic g = d;
         g.loc = mapLoc(d.loc);
@@ -1345,6 +1431,7 @@ IndexResult Indexer::run(const ProjectSetup &setup, CodeModel &model, std::atomi
                 if (rc == 0 && tu) {
                     unit.tu = tu;
                     unit.macros();
+                    unit.connections();
                 }
                 // Measuring bodies needs the unit while the callbacks run,
                 // clang_indexSourceFile only hands it over at the end

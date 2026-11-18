@@ -27,25 +27,32 @@ research before a delivery estimate is credible.
 
 ### Delivery progress
 
-The first slice of A is implemented:
+| Increment | Delivered status |
+|---|---|
+| A | Historical file metrics, editable revision, UTC calendar-day windows, disk caching with metadata/identity/version invalidation, optional bounded Git rename-following heuristic, Metrics/CSV, file churn coloring, and on-demand worktree blame/contributor context. |
+| B | Asynchronous explainable top-20/all Review Focus, project/touched/potential-dependent scopes, Markdown/JSON/CLI, findings context, function priority and file maxima in Metrics/Treemap. Historical attribution is explicitly a file proxy. |
+| C | Versioned strict path-layer contracts, separate semantic/include scopes, exact reasoned exceptions, unassigned files, evidence, Review panel, Architecture/Matrix highlights, reports and opt-in CLI violation exit status. |
+| D | Cycle-safe transitive header ranking, distinct indexed TU counts, witness chains, cycles, bounded expandable include-only graph, Treemap coloring and bounded CLI JSON. Coverage is explicitly partial/aggregated. |
+| E | Typed Qt connect facts with incomplete/dynamic limits; source labels distinguish addresses and possible virtual calls. Bounded navigable structural relationship queries reuse the active symbol. |
+| F | Optional OFF-default Clang C++ CFG helper, compilation-database/exact-definition selection, bounded source-linked block/successor diagram and evidence lists, cancellable process lifecycle, and declared exclusions. LLVM 18 build and CFG fixtures pass. |
+| G1 | Experimental explicit enum assignments with source evidence; prior state remains unknown. No promotion to a state-machine/invalid-transition checker. |
+| G2 | Experimental compiler-derived pointer/reference type shapes. Ownership, borrowing and lifetime remain unknown; ownership-graph gate not passed. |
+| G3 | No-go: no slices emitted without validated alias/call-effect/branch-join transfer rules. |
 
-- Batched historical file metrics for resolved `HEAD`, with a configurable
-  180-day default window and per-project window settings.
-- Non-merge commit counts, added/removed lines, mailmap-resolved author counts,
-  and last-change timestamps.
-- File Metrics columns and file-level Treemap churn coloring, with shared
-  refresh/cancel controls and asynchronous, generation-checked results.
-- Explicit unavailable/error/cancelled/shallow-history states, unknown binary
-  line totals, and CSV scope metadata.
-- Focused Git fixtures and app/model tests covering metrics, file-level
-  Treemap values, cancellation, project switching, and saved window settings.
+These are first deliveries and gated experiments, **not completion of every
+later stage or release target below**. Remaining work includes historical
+function-hunk attribution, richer CFG interaction
+(straight-line-region collapsing/call selection), complete optional-helper
+deployment validation, and an agreed large-project performance baseline.
+Qt state-machine API reconstruction and ownership/def-use inference are not
+claimed from the experimental enum/type facts.
 
-This slice deliberately counts **pathnames**, not rename lineages. Renames are
-treated as deletion/addition; the UI and export state that limitation. A is not
-complete: rename continuity, persistent result caching, revision selection,
-complexity-plus-churn ranking/coloring, and large-project performance validation
-remain. The next slice should establish trustworthy rename attribution and
-cache invalidation before building B's historical ranking.
+Correctness fixtures cover Git rename/window/merge/cache/mailmap behavior,
+stable priority/scope selection, Qt connect/address/call evidence, contracts,
+diamond/cyclic include impact, CFG branches/backedges/switch fallthrough/returns,
+CLI report shapes and statuses, and app cancellation/project switching.
+Native UI smoke checks exercise the new panels. Tiny fixtures do not certify
+the proposed 200 ms / 1 s / 10% large-project targets below.
 
 ## 1. What already exists, and what should change
 

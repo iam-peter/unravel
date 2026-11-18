@@ -10,11 +10,26 @@ target_compile_definitions(tst_core PRIVATE UNRAVEL_SAMPLE_DIR="${PROJECT_SOURCE
 set_target_properties(tst_core PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
 unravel_copy_libclang(tst_core)
 add_test(NAME tst_core COMMAND tst_core -o ${test_output_dir}/tst_core.txt,txt -o -,txt)
+add_test(NAME tst_cli_reports COMMAND ${CMAKE_COMMAND}
+    -DCLI=$<TARGET_FILE:unravel-cli> -DSAMPLE=${PROJECT_SOURCE_DIR}/samples/warehouse
+    -DOUTPUT_DIR=${test_output_dir} -P ${CMAKE_CURRENT_SOURCE_DIR}/cli_reports.cmake)
+
+foreach(feature architecture includeimpact)
+    qt_add_executable(tst_${feature} tst_${feature}.cpp)
+    target_link_libraries(tst_${feature} PRIVATE unravel_core Qt6::Test)
+    set_target_properties(tst_${feature} PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+    unravel_copy_libclang(tst_${feature})
+    add_test(NAME tst_${feature} COMMAND tst_${feature} -o ${test_output_dir}/tst_${feature}.txt,txt -o -,txt)
+endforeach()
 
 if(TARGET unravel)
     qt_add_executable(tst_hotspots tst_hotspots.cpp
         ../src/app/session.h ../src/app/session.cpp
         ../src/app/hotspots.h ../src/app/hotspots.cpp
+        ../src/app/reviewfocus.h ../src/app/reviewfocus.cpp
+        ../src/app/contracts.h ../src/app/contracts.cpp
+        ../src/app/includeimpactmodel.h ../src/app/includeimpactmodel.cpp
+        ../src/app/controlflow.h ../src/app/controlflow.cpp
         ../src/app/changes.h ../src/app/changes.cpp
         ../src/app/models.h ../src/app/models.cpp
         ../src/app/highlight.h ../src/app/highlight.cpp

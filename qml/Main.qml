@@ -295,13 +295,13 @@ ApplicationWindow {
                 currentIndex: win.currentView
 
                 GraphView { active: StackLayout.isCurrentItem }
-                FlowView { active: StackLayout.isCurrentItem }
+                FlowPage { active: StackLayout.isCurrentItem }
                 ArchitectureView { active: StackLayout.isCurrentItem }
                 MatrixPage { active: StackLayout.isCurrentItem }
                 BundlesPage { active: StackLayout.isCurrentItem }
                 TreemapPage { active: StackLayout.isCurrentItem }
                 MetricsView { active: StackLayout.isCurrentItem }
-                FindingsView { active: StackLayout.isCurrentItem; onShowView: id => win.showView(id) }
+                ReviewPage { active: StackLayout.isCurrentItem; onShowView: id => win.showView(id) }
                 ChangesView { active: StackLayout.isCurrentItem }
             }
         }

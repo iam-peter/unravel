@@ -152,6 +152,14 @@ struct Reference {
     Location loc;        // line and column of the name; endCol is its end
 };
 
+struct EventConnection {
+    qint32 signal = -1, target = -1;
+    Location loc, targetLoc;
+    QString sender, receiver;
+    QString delivery; // declared type only; AutoConnection depends on runtime affinity
+    QString limitation;
+};
+
 // An aggregated relation, one per (from, to, kind)
 struct Edge {
     qint32 from = -1;
@@ -221,6 +229,7 @@ public:
     QVector<File> files;
     QVector<Symbol> symbols;
     QVector<Reference> refs;
+    QVector<EventConnection> eventConnections;
     QVector<Diagnostic> diagnostics;
     // Names used in project macros' definitions, made references by finalize:
     // the preprocessing record leaves out expansions inside other macros
@@ -239,6 +248,7 @@ public:
     QVector<QVector<qint32>> inEdges;
     QVector<QVector<qint32>> refsInFile; // per file, references sorted by position
     QVector<QVector<qint32>> refsTo;     // per symbol, its references (not declarations)
+    QVector<QVector<qint32>> refsFrom;   // per symbol, outgoing references in source order
     QVector<QVector<qint32>> declsOf;    // per symbol, its declaration references
     QStringList modules;                 // sorted
     QHash<QString, qint32> moduleIndex;

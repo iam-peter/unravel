@@ -49,11 +49,22 @@ Item {
                         if (!h || h.from === undefined) return qsTr("Row uses column · %n nodes", "", matrix.count)
                         if (h.diagonal) return h.from
                         return h.from + " → " + h.to + ": " + (h.count + h.includes > 0
-                               ? (h.kinds || "") + (h.includes ? qsTr(", %1 includes").arg(h.includes) : "") + (h.cyclic ? qsTr(" · in a cycle") : "")
+                               ? (h.kinds || "") + (h.includes ? qsTr(", %1 includes").arg(h.includes) : "")
+                                 + (h.cyclic ? qsTr(" · in a cycle") : "")
+                                 + (h.forbidden ? qsTr(" · architecture rule violation (orange)") : "")
                                : qsTr("no dependency"))
                     }
                 }
             }
+        }
+        Label {
+            visible: Contracts.configured && Contracts.valid
+            Layout.fillWidth: true
+            padding: 6
+            font: Theme.smallFont
+            color: Theme.textMuted
+            text: qsTr("Orange outlines: architecture rule violations. Review > Architecture rules shows rule IDs and evidence.")
+            wrapMode: Text.Wrap
         }
         SplitView {
             Layout.fillWidth: true

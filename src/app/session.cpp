@@ -12,6 +12,7 @@
 #include <QSettings>
 #include <QStandardPaths>
 #include <QUrl>
+#include <QQueue>
 #include <QtConcurrent>
 
 #include "indexer.h"
@@ -45,6 +46,85 @@ Session *Session::instance()
     if (!g_session)
         g_session = new Session(qApp);
     return g_session;
+}
+
+QVariantMap Session::queryRelations(int symbol, const QString &query, int depth, bool crossModuleOnly) const
+{
+    const QStringList supported{QStringLiteral("callers"), QStringLiteral("callees"), QStringLiteral("subclasses"),
+        QStringLiteral("overrides"), QStringLiteral("readers"), QStringLiteral("writers"), QStringLiteral("dependencies")};
+    if (!m_model || symbol < 0 || symbol >= m_model->symbols.size())
+        return {{QStringLiteral("error"), tr("Select a symbol")}};
+    if (!supported.contains(query) || depth < 1 || depth > 12)
+        return {{QStringLiteral("error"), tr("Unsupported relationship query or depth")}};
+    const auto &m = *m_model;
+    QSet<qint32> seen{symbol};
+    QQueue<QPair<qint32, int>> queue;
+    queue.enqueue({symbol, 0});
+    QVariantList rows;
+    bool truncated = false;
+    while (!queue.isEmpty() && !truncated) {
+        const auto [current, distance] = queue.dequeue();
+        if (distance >= depth)
+            continue;
+        QVector<QPair<qint32, qint32>> neighbours;
+        if (query == QLatin1String("callers") || query == QLatin1String("callees")) {
+            const auto calls = query == QLatin1String("callers") ? Analysis::callersOf(m, current, true)
+                                                                : Analysis::callsFrom(m, current, true);
+            for (const auto &call : calls)
+                neighbours.append({call.callee, call.ref});
+        } else if (query == QLatin1String("readers") || query == QLatin1String("writers")) {
+            for (qint32 ref : m.refsTo[current]) {
+                const auto &r = m.refs[ref];
+                if (r.from >= 0 && r.kind == RefKind::VarUse
+                    && (r.flags & (query == QLatin1String("readers") ? RefRead : RefWrite)))
+                    neighbours.append({r.from, ref});
+            }
+        } else {
+            const bool outgoing = query == QLatin1String("dependencies");
+            const auto &edges = outgoing ? m.outEdges[current] : m.inEdges[current];
+            for (qint32 id : edges) {
+                const auto &edge = m.edges[id];
+                if ((query == QLatin1String("subclasses") && edge.kind == RefKind::Inherit)
+                    || (query == QLatin1String("overrides") && edge.kind == RefKind::Override) || outgoing)
+                    neighbours.append({outgoing ? edge.to : edge.from, edge.firstRef});
+            }
+        }
+        for (const auto &[next, ref] : neighbours) {
+            if (next < 0 || seen.contains(next) || !m.isProjectSymbol(next))
+                continue;
+            seen.insert(next);
+            if (seen.size() > 1000) {
+                truncated = true;
+                break;
+            }
+            queue.enqueue({next, distance + 1});
+            const auto from = m.symbols[symbol].where(), to = m.symbols[next].where();
+            if (crossModuleOnly && from.valid() && to.valid() && m.files[from.file].module == m.files[to.file].module)
+                continue;
+            rows.append(QVariantMap{{QStringLiteral("symbol"), next}, {QStringLiteral("name"), m.displayName(next)},
+                {QStringLiteral("ref"), ref}, {QStringLiteral("distance"), distance + 1},
+                {QStringLiteral("location"), ref >= 0 ? m.locationText(m.refs[ref].loc) : m.locationText(to)}});
+        }
+    }
+    return {{QStringLiteral("rows"), rows}, {QStringLiteral("truncated"), truncated}, {QStringLiteral("error"), QString()}};
+}
+
+QVariantList Session::eventConnections() const
+{
+    QVariantList rows;
+    if (!m_model)
+        return rows;
+    for (const auto &event : m_model->eventConnections) {
+        rows.append(QVariantMap{
+            {QStringLiteral("signal"), event.signal}, {QStringLiteral("target"), event.target},
+            {QStringLiteral("signalName"), event.signal >= 0 ? m_model->displayName(event.signal) : tr("Unresolved signal")},
+            {QStringLiteral("targetName"), event.target >= 0 ? m_model->displayName(event.target) : tr("Functor or unresolved target")},
+            {QStringLiteral("sender"), event.sender}, {QStringLiteral("receiver"), event.receiver},
+            {QStringLiteral("delivery"), event.delivery}, {QStringLiteral("limitation"), event.limitation},
+            {QStringLiteral("file"), event.loc.file}, {QStringLiteral("line"), event.loc.line},
+            {QStringLiteral("targetFile"), event.targetLoc.file}, {QStringLiteral("targetLine"), event.targetLoc.line}});
+    }
+    return rows;
 }
 
 QString Session::toLocalPath(const QString &pathOrUrl) const
@@ -731,11 +811,17 @@ QVariantMap Session::referenceInfo(int ref) const
     out[QStringLiteral("toName")] = r.to >= 0 ? m_model->displayName(r.to) : QString();
     out[QStringLiteral("kind")] = int(r.kind);
     out[QStringLiteral("kindName")] = refKindName(r.kind);
+    if (r.kind == RefKind::Call && (r.flags & RefAddressOf))
+        out[QStringLiteral("kindName")] = tr("Function address (not execution)");
+    else if (r.kind == RefKind::Call && (r.flags & RefDynamic))
+        out[QStringLiteral("kindName")] = tr("Possible virtual call");
     out[QStringLiteral("file")] = r.loc.file;
     out[QStringLiteral("line")] = r.loc.line;
     out[QStringLiteral("location")] = m_model->locationText(r.loc);
     out[QStringLiteral("write")] = bool(r.flags & RefWrite);
     out[QStringLiteral("implicit")] = bool(r.flags & RefImplicit);
+    out[QStringLiteral("addressOf")] = bool(r.flags & RefAddressOf);
+    out[QStringLiteral("dynamic")] = bool(r.flags & RefDynamic);
     return out;
 }
 

@@ -388,10 +388,18 @@ void CodeModel::finalize()
                }), refs.end());
 
     // Edges
+    std::sort(eventConnections.begin(), eventConnections.end(), [](const auto &a, const auto &b) {
+        return std::tie(a.loc.file, a.loc.line, a.loc.col, a.signal, a.target)
+             < std::tie(b.loc.file, b.loc.line, b.loc.col, b.signal, b.target);
+    });
+    eventConnections.erase(std::unique(eventConnections.begin(), eventConnections.end(), [](const auto &a, const auto &b) {
+        return a.loc == b.loc && a.signal == b.signal && a.target == b.target;
+    }), eventConnections.end());
     edges.clear();
     QHash<quint64, qint32> edgeIds;
     refsInFile = QVector<QVector<qint32>>(nf);
     refsTo = QVector<QVector<qint32>>(ns);
+    refsFrom = QVector<QVector<qint32>>(ns);
     declsOf = QVector<QVector<qint32>>(ns);
     for (qint32 i = 0; i < refs.size(); ++i) {
         const Reference &r = refs[i];
@@ -406,6 +414,7 @@ void CodeModel::finalize()
         refsTo[r.to].append(i);
         if (r.from < 0 || r.from >= ns)
             continue;
+        refsFrom[r.from].append(i);
         const quint64 key = (quint64(quint32(r.from)) << 34) ^ (quint64(quint32(r.to)) << 4) ^ quint64(r.kind);
         auto it = edgeIds.find(key);
         if (it == edgeIds.end()) {
@@ -530,7 +539,7 @@ Stats CodeModel::stats() const
 namespace {
 
 constexpr quint32 kMagic = 0x554e5256; // "UNRV"
-constexpr quint32 kVersion = 5;
+constexpr quint32 kVersion = 6;
 
 QDataStream &operator<<(QDataStream &s, const Location &l)
 {
@@ -570,6 +579,10 @@ bool CodeModel::save(const QString &path) const
     s << qint64(refs.size());
     for (const Reference &r : refs)
         s << r.from << r.to << quint8(r.kind) << r.flags << r.loc;
+    s << qint32(eventConnections.size());
+    for (const auto &event : eventConnections)
+        s << event.signal << event.target << event.loc << event.targetLoc << event.sender << event.receiver
+          << event.delivery << event.limitation;
     s << qint32(diagnostics.size());
     for (const Diagnostic &d : diagnostics)
         s << quint8(d.severity) << d.message << d.category << d.loc << d.unit;
@@ -632,6 +645,18 @@ bool CodeModel::load(const QString &path)
         quint8 kind = 0;
         s >> r.from >> r.to >> kind >> r.flags >> r.loc;
         r.kind = RefKind(kind);
+    }
+    qint32 ne = 0;
+    s >> ne;
+    if (ne < 0 || ne > limit)
+        return false;
+    m.eventConnections.resize(ne);
+    for (auto &event : m.eventConnections) {
+        s >> event.signal >> event.target >> event.loc >> event.targetLoc >> event.sender >> event.receiver
+          >> event.delivery >> event.limitation;
+        if (event.signal < -1 || event.signal >= ns || event.target < -1 || event.target >= ns
+            || event.loc.file < -1 || event.loc.file >= nf || event.targetLoc.file < -1 || event.targetLoc.file >= nf)
+            return false;
     }
     qint32 nd = 0;
     s >> nd;

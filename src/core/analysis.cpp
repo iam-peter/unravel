@@ -579,58 +579,39 @@ QVector<CallSite> callsFrom(const CodeModel &m, qint32 fn, bool withImplicit)
     if (fn < 0 || fn >= m.symbols.size())
         return out;
     QHash<qint32, qint32> seen;
-    QVector<qint32> refIds;
-    for (qint32 e : m.outEdges[fn]) {
-        const Edge &edge = m.edges[e];
-        if (edge.kind != RefKind::Call)
-            continue;
-        if (!withImplicit && (edge.flags & RefImplicit) && edge.count == 1)
-            continue;
-        refIds.append(e);
-    }
     // The references give the order; collect each callee's first site
     struct Site {
         qint32 callee, ref;
     };
     QVector<Site> sites;
-    const Symbol &f = m.symbols[fn];
-    const qint32 file = f.def.valid() ? f.def.file : f.decl.file;
-    if (file >= 0 && file < m.refsInFile.size()) {
-        for (qint32 ri : m.refsInFile[file]) {
-            const Reference &r = m.refs[ri];
-            if (r.from != fn || r.kind != RefKind::Call)
-                continue;
-            if (!withImplicit && (r.flags & RefImplicit))
-                continue;
-            sites.append({r.to, ri});
-        }
+    for (qint32 ri : m.refsFrom[fn]) {
+        const Reference &r = m.refs[ri];
+        if (r.kind != RefKind::Call || r.to < 0 || (r.flags & RefAddressOf))
+            continue;
+        if (!withImplicit && (r.flags & RefImplicit))
+            continue;
+        sites.append({r.to, ri});
     }
+    const auto &symbol = m.symbols[fn];
+    const int definitionFile = symbol.def.valid() ? symbol.def.file : symbol.decl.file;
+    std::stable_partition(sites.begin(), sites.end(), [&](const Site &site) {
+        return m.refs[site.ref].loc.file == definitionFile;
+    });
     for (const Site &s : std::as_const(sites)) {
         auto it = seen.find(s.callee);
         if (it != seen.end()) {
-            out[*it].count++;
+            auto &call = out[*it];
+            ++call.count;
+            call.implicit = call.implicit && bool(m.refs[s.ref].flags & RefImplicit);
+            call.virtualCall = call.virtualCall || bool(m.refs[s.ref].flags & RefDynamic);
             continue;
         }
         CallSite c;
         c.callee = s.callee;
         c.ref = s.ref;
         c.implicit = m.refs[s.ref].flags & RefImplicit;
-        c.virtualCall = m.symbols[s.callee].has(Virtual);
+        c.virtualCall = m.refs[s.ref].flags & RefDynamic;
         seen.insert(s.callee, qint32(out.size()));
-        out.append(c);
-    }
-    // Calls made from another file (an inline part in a header) come last
-    for (qint32 e : std::as_const(refIds)) {
-        const Edge &edge = m.edges[e];
-        if (seen.contains(edge.to))
-            continue;
-        CallSite c;
-        c.callee = edge.to;
-        c.ref = edge.firstRef;
-        c.count = edge.count;
-        c.implicit = edge.flags & RefImplicit;
-        c.virtualCall = m.symbols[edge.to].has(Virtual);
-        seen.insert(edge.to, qint32(out.size()));
         out.append(c);
     }
     return out;
@@ -641,16 +622,27 @@ QVector<CallSite> callersOf(const CodeModel &m, qint32 fn, bool withImplicit)
     QVector<CallSite> out;
     if (fn < 0 || fn >= m.symbols.size())
         return out;
-    for (qint32 e : m.inEdges[fn]) {
-        const Edge &edge = m.edges[e];
-        if (edge.kind != RefKind::Call)
+    QHash<qint32, qint32> seen;
+    for (qint32 ref : m.refsTo[fn]) {
+        const auto &reference = m.refs[ref];
+        if (reference.kind != RefKind::Call || reference.from < 0 || (reference.flags & RefAddressOf))
             continue;
-        if (!withImplicit && (edge.flags & RefImplicit))
+        if (!withImplicit && (reference.flags & RefImplicit))
             continue;
+        if (seen.contains(reference.from)) {
+            auto &call = out[seen.value(reference.from)];
+            ++call.count;
+            call.implicit = call.implicit && bool(reference.flags & RefImplicit);
+            call.virtualCall = call.virtualCall || bool(reference.flags & RefDynamic);
+            continue;
+        }
         CallSite c;
-        c.callee = edge.from;
-        c.ref = edge.firstRef;
-        c.count = edge.count;
+        c.callee = reference.from;
+        c.ref = ref;
+        c.count = 1;
+        c.implicit = reference.flags & RefImplicit;
+        c.virtualCall = reference.flags & RefDynamic;
+        seen.insert(c.callee, int(out.size()));
         out.append(c);
     }
     std::sort(out.begin(), out.end(), [&](const CallSite &a, const CallSite &b) {
@@ -686,10 +678,8 @@ namespace {
 QVector<QPair<qint32, bool>> successors(const CodeModel &m, qint32 fn)
 {
     QVector<QPair<qint32, bool>> out;
-    for (qint32 e : m.outEdges[fn]) {
-        if (m.edges[e].kind == RefKind::Call)
-            out.append({m.edges[e].to, false});
-    }
+    for (const auto &call : callsFrom(m, fn, true))
+        out.append({call.callee, false});
     // A call to a virtual method may land in any override of it
     if (m.symbols[fn].has(Virtual)) {
         for (qint32 e : m.inEdges[fn]) {
@@ -703,10 +693,8 @@ QVector<QPair<qint32, bool>> successors(const CodeModel &m, qint32 fn)
 QVector<QPair<qint32, bool>> predecessors(const CodeModel &m, qint32 fn)
 {
     QVector<QPair<qint32, bool>> out;
-    for (qint32 e : m.inEdges[fn]) {
-        if (m.edges[e].kind == RefKind::Call)
-            out.append({m.edges[e].from, false});
-    }
+    for (const auto &call : callersOf(m, fn, true))
+        out.append({call.callee, false});
     for (qint32 e : m.outEdges[fn]) {
         if (m.edges[e].kind == RefKind::Override)
             out.append({m.edges[e].to, true});
@@ -1087,15 +1075,16 @@ void cycles(const CodeModel &m, Report &rep)
         const qint32 ns = qint32(m.symbols.size());
         QVector<QVector<qint32>> adj(ns);
         QVector<bool> self(ns, false);
-        for (const Edge &e : m.edges) {
-            if (e.kind != RefKind::Call || (e.flags & RefImplicit))
+        for (const auto &reference : m.refs) {
+            if (reference.kind != RefKind::Call || (reference.flags & (RefImplicit | RefAddressOf))
+                || reference.from < 0 || reference.to < 0)
                 continue;
-            if (!reviewable(m, m.symbols[e.from]) || !reviewable(m, m.symbols[e.to]))
+            if (!reviewable(m, m.symbols[reference.from]) || !reviewable(m, m.symbols[reference.to]))
                 continue;
-            if (e.from == e.to)
-                self[e.from] = true;
+            if (reference.from == reference.to)
+                self[reference.from] = true;
             else
-                adj[e.from].append(e.to);
+                adj[reference.from].append(reference.to);
         }
         QVector<qint32> sizes;
         const QVector<qint32> comp = components(ns, adj, &sizes);

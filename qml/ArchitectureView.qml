@@ -32,6 +32,15 @@ Item {
         anchors.fill: parent
         spacing: 0
 
+        Label {
+            visible: Contracts.configured && Contracts.valid
+            Layout.fillWidth: true
+            padding: 6
+            font: Theme.smallFont
+            color: Theme.textMuted
+            text: qsTr("Orange edges: architecture rule violations; red: cycles. Review > Architecture rules shows rule IDs and evidence.")
+            wrapMode: Text.Wrap
+        }
         Pane {
             Layout.fillWidth: true
             padding: Styles.Primitives.spacing.sp075

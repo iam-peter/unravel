@@ -51,6 +51,7 @@ public:
         QVector<qint32> modelEdges; // indexes into CodeModel::edges
         int link = -1;           // DepGraph link, for dependency scenes
         bool cyclic = false;
+        bool forbidden = false;
         bool dashed = false;
         bool bothWays = false;
         QPainterPath path;       // scene coordinates

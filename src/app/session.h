@@ -149,6 +149,9 @@ public:
     Q_INVOKABLE void openFolder(int file) const;
     Q_INVOKABLE QString cachePath() const;
     Q_INVOKABLE QVariantList diagnostics(int limit = 5000) const;
+    Q_INVOKABLE QVariantMap queryRelations(int symbol, const QString &query, int depth = 1,
+                                           bool crossModuleOnly = false) const;
+    Q_INVOKABLE QVariantList eventConnections() const;
 
     // The line at which `focus` sits in the code the view shows (for scrolling)
     int focusLine() const { return m_active.line; }

@@ -206,7 +206,9 @@ Item {
             if (canvas.hoveredEdge < 0 || !canvas.scene) return ""
             const i = canvas.scene.edgeInfo(canvas.hoveredEdge)
             return qsTr("%1 → %2\n%3 × %4%5").arg(i.fromName).arg(i.toName).arg(i.count).arg(i.kindName)
-                     .arg(i.cyclic ? qsTr("  (in a cycle)") : "") + qsTr("\nClick for the references")
+                     .arg(i.cyclic ? qsTr("  (in a cycle)") : "")
+                     + (i.forbidden ? qsTr("\nArchitecture rule violation (orange). See Review > Architecture rules.") : "")
+                     + qsTr("\nClick for the references")
         }
     }
 

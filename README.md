@@ -115,20 +115,123 @@ existing complexity column with commit frequency to find review hotspots.
 **Treemap → Colour → Git churn (files)** colors whole files by touching commits;
 it does not attribute file history to individual functions.
 
-The history bar selects a rolling window (180 days by default, remembered per
-project), shows the resolved `HEAD` and UTC dates, and offers **Refresh** and
+The history bar selects UTC calendar days (180 by default, remembered per
+project), an editable revision (initially `HEAD`), and offers **Refresh** and
 **Cancel** without reindexing. Counts cover non-merge commits reachable from that
 revision, filtered by committer time, not just the 500 commits in Changes.
-Uncommitted edits are excluded. History is currently **pathname-based**:
+Uncommitted edits are excluded. History is **pathname-based** by default:
 renames count as a deletion at the old name and an addition at the new one;
-earlier history is not carried across the rename.
+earlier history is not carried across the rename. Opt into **Follow renames**
+for Git's slower, per-current-file `--follow` heuristic; it is not proof of
+identity through copies, splits, or refactoring. Deleted paths remain in
+pathname statistics but are not current files in a rename-following query.
 
 Shallow clones are labeled partial. Missing or failed history is shown as
 unavailable, not zero; binary changes have unknown line totals. The file-table
 CSV includes the revision, time bounds, coverage, and pathname policy. Git must
 support `--since-as-filter`; failed, oversized (over 128 MiB), or timed-out
 (two-minute) queries report an error rather than displaying incomplete totals.
-History results are held in memory; reopening or refreshing reads Git again.
+Results are cached on disk separately from the code index. Keys include the
+repository, resolved revision, UTC window, Git/algorithm version, identity
+mapping, graph metadata, and rename policy. Corrupt caches are reported and
+recomputed. **Refresh** bypasses the result cache; Git metadata is checked even
+on a cache hit. Rename following has an additional two-minute traversal budget.
+**Blame active code** loads up to 80 current source lines on demand, showing
+commit, contributor, and summary. This is worktree attribution against `HEAD`,
+independent of the selected history window/revision; uncommitted lines are
+marked `worktree`. Closing the dialog cancels the bounded background request.
+
+### Review Focus
+
+**Review > Review Focus** ranks the top 20 defined project functions, with
+whole-project, touched-function, and bounded potential-dependent scopes.
+Potential reach follows static dependencies, not proven execution impact.
+Show all, select a row to navigate, or copy Markdown/JSON with the components:
+
+```text
+C = max(1, McCabe/15, cognitive/25)
+H = log2(1 + file touching commits)
+D = log2(1 + distinct incoming/outgoing symbol neighbours)
+priority = C * (1 + H) * (1 + 0.25 * D)
+```
+
+This is **heuristic v1, not a defect probability**. History is explicitly a
+file-level proxy, not historical function churn. Static priority omits H;
+the summary identifies when no history is used. Contributor counts do not
+multiply the score. Existing findings and severity remain in **Findings**.
+Metrics adds function priority and maximum function priority per file; Treemap
+adds priority coloring. Their scope labels and CSV metadata retain the policy.
+
+### Architecture contracts and header impact
+
+**Review > Architecture rules** reads optional
+`.unravel/architecture.json` from the project root. For example:
+
+```json
+{
+  "version": 1,
+  "layers": [
+    { "id": "ui", "name": "UI", "paths": ["src/ui/**"] },
+    { "id": "database", "name": "Database", "paths": ["src/database/**"] }
+  ],
+  "rules": [
+    { "id": "ui-no-database", "from": "ui", "to": "database",
+      "effect": "forbid", "scope": "semantic" }
+  ],
+  "exceptions": []
+}
+```
+
+Use `scope: "includes"` for include rules. Unlisted pairs are allowed;
+an explicit allow overrides a forbid for the same pair/scope. Ambiguous layer
+assignments and malformed/unknown configuration fields are errors. Exceptions
+name `id`, `rule`, root-relative `source` and `target` paths, and a nonempty
+`reason`. The panel exposes unassigned files, rule IDs, source evidence, and
+JSON/Markdown reports. Architecture edges and Matrix cell outlines mark
+violations in orange, separately from red cycles. Without a rule file,
+observed dependency views behave as before.
+
+**Review > Header impact** ranks project headers by distinct reachable indexed
+translation units, with witness include chains, cycle evidence, and an
+expandable include-only graph. Treemap adds a header-impact file color mode.
+These are **partial indexed-configuration estimates, not measured build
+times**: aggregated include facts may combine configurations, and paths through
+external/generated files, PCH, header units, or modules can be absent.
+The CLI report bounds ranking to 20 headers and witnesses to 50 units per
+header, reporting truncation explicitly.
+
+### Relationships, Qt events, and experimental compiler flow
+
+**Flow > Relationships** provides depth-bounded callers/callees,
+subclasses/implementors, overrides, readers/writers, and cross-module
+dependencies, with an explicit 1,000-symbol limit. Function-address references
+are not direct calls or recursion; source references label address-taking and
+possible virtual dispatch distinctly.
+
+**Flow > Qt events** records statically resolved typed `QObject::connect`
+endpoints, sender/context expressions, delivery type, and source evidence.
+Connections describe **potential delivery**, not immediate calls. Lambdas have
+navigable locations; string/unresolved targets are marked incomplete.
+Thread affinity, disconnects, receiver lifetime, dynamic invocation, and QML
+connections prevent execution guarantees. Cached indexes rebuild when their
+serialized format is incompatible.
+
+**Flow > Control flow (experimental)** uses an optional `unravel-flow`
+helper beside the application executable. It emits real Clang basic blocks
+and successor edges from a compilation database, never an invented CFG from
+the call graph. Select a function definition in a listed translation unit;
+the selector uses its exact definition start line. Missing helper/database,
+unsupported selection, timeouts, and limits produce explanations.
+The source-linked block/successor diagram is limited to 150 blocks and 400
+edges; larger results retain their block evidence without a truncated diagram.
+
+Exception paths, implicit destructor edges, unreachable successors, and
+coroutines are not modeled; header-only definitions outside a listed
+translation unit are unsupported. Experimental facts expose explicit enum
+assignments with **unknown prior state**, and compiler-derived pointer/reference
+type shapes with **unknown ownership/lifetime**. They are not validated state
+machines or ownership graphs. Local data-flow slicing is deliberately a
+**no-go** until aliasing, call effects, and branch-join rules are validated.
 
 ## What the review looks for
 
@@ -187,6 +290,15 @@ ctest --test-dir build --output-on-failure
 ./build/bin/unravel samples/warehouse
 ```
 
+The CFG helper is OFF by default and does not add Clang C++ linkage to the
+normal application/core. To build it, install matching LLVM/Clang development
+libraries (including libclang-cpp), then configure with
+`-DUNRAVEL_ENABLE_FLOW=ON -DUNRAVEL_LLVM_ROOT=/path/to/llvm`.
+The helper was validated with LLVM 18; its C++ API is version-coupled.
+Its QtCore, libclang, libclang-cpp, LLVM, and builtin-header runtime dependencies
+must remain available. Relocatable optional-helper packaging has not been
+validated; default release packaging is unchanged.
+
 `samples/warehouse` is a small program with known flaws (layers that depend on each other, a helper
 written three times, a base without a virtual destructor, global state, dead code) to try it on.
 
@@ -211,7 +323,18 @@ Run the second command again to update it.
 ./build/bin/unravel-cli path/to/project --report review.md      # the review as Markdown
 ./build/bin/unravel-cli path/to/compile_commands.json --dump    # every symbol and relation
 ./build/bin/unravel-cli path/to/project --save index.idx        # the index, to --load later
+./build/bin/unravel-cli path/to/project --focus review-focus.md --focus-json focus.json
+./build/bin/unravel-cli path/to/project --revision main --history-days 90 --follow-renames --focus-json -
+./build/bin/unravel-cli path/to/project --static-focus --focus-json static-focus.json
+./build/bin/unravel-cli path/to/project --architecture .unravel/architecture.json --architecture-json rules.json --fail-on-architecture
+./build/bin/unravel-cli path/to/project --include-impact headers.json
 ```
+
+Architecture violations exit **3** only with `--fail-on-architecture`;
+configuration errors exit **2**. `--architecture-json` without an explicit
+configuration uses the project's `.unravel/architecture.json`. Choose only one
+stdout (`-`) report per invocation, without `--dump`. CLI historical Focus
+fails explicitly if Git is unavailable; opt into `--static-focus` instead.
 
 `unravel --grab shot.png --view architecture --symbol ns::Class project` saves a screenshot of a view;
 `unravel --view changes --commits a1b2c3d,worktree project` opens on the code those commits changed;

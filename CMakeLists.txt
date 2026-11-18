@@ -5,6 +5,7 @@ project(Unravel VERSION 0.1.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+option(UNRAVEL_ENABLE_FLOW "Build the optional experimental Clang CFG helper" OFF)
 
 find_package(Qt6 6.9 REQUIRED COMPONENTS Core Gui Qml Quick QuickControls2 Svg Concurrent)
 qt_standard_project_setup(REQUIRES 6.8)
@@ -102,6 +103,9 @@ add_library(unravel_core STATIC
     src/core/layout.h src/core/layout.cpp
     src/core/report.h src/core/report.cpp
     src/core/history.h src/core/history.cpp
+    src/core/focus.h src/core/focus.cpp
+    src/core/architecture.h src/core/architecture.cpp
+    src/core/includeimpact.h src/core/includeimpact.cpp
     src/core/python.h src/core/python.cpp
 )
 target_include_directories(unravel_core PUBLIC src/core)
@@ -164,12 +168,20 @@ if(NOT UNRAVEL_CORE_ONLY)
             qml/ViewBar.qml
             qml/GraphView.qml
             qml/FlowView.qml
+            qml/FlowPage.qml
+            qml/RelationsPanel.qml
+            qml/EventsPanel.qml
+            qml/ControlFlowPanel.qml
             qml/ArchitectureView.qml
             qml/MatrixPage.qml
             qml/BundlesPage.qml
             qml/TreemapPage.qml
             qml/MetricsView.qml
             qml/HistoryBar.qml
+            qml/ReviewPage.qml
+            qml/FocusView.qml
+            qml/ContractsPanel.qml
+            qml/IncludeImpactPanel.qml
             qml/FindingsView.qml
             qml/ChangesView.qml
             qml/FoldMenu.qml
@@ -180,6 +192,10 @@ if(NOT UNRAVEL_CORE_ONLY)
             src/app/session.h src/app/session.cpp
             src/app/changes.h src/app/changes.cpp
             src/app/hotspots.h src/app/hotspots.cpp
+            src/app/reviewfocus.h src/app/reviewfocus.cpp
+            src/app/contracts.h src/app/contracts.cpp
+            src/app/includeimpactmodel.h src/app/includeimpactmodel.cpp
+            src/app/controlflow.h src/app/controlflow.cpp
             src/app/models.h src/app/models.cpp
             src/app/graphscene.h src/app/graphscene.cpp
             src/app/views.h src/app/views.cpp
@@ -229,4 +245,12 @@ include(CTest)
 if(BUILD_TESTING)
     find_package(Qt6 REQUIRED COMPONENTS Test)
     add_subdirectory(tests)
+endif()
+if(UNRAVEL_ENABLE_FLOW)
+    add_subdirectory(src/flowtool)
+    if(TARGET unravel)
+        add_dependencies(unravel unravel-flow)
+    endif()
+    include(GNUInstallDirs)
+    install(TARGETS unravel-flow RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
