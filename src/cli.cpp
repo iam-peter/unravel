@@ -44,12 +44,13 @@ int main(int argc, char *argv[])
     const QCommandLineOption revisionOpt(QStringLiteral("revision"), QStringLiteral("Git revision for historical review priority."), QStringLiteral("revision"), QStringLiteral("HEAD"));
     const QCommandLineOption staticOpt(QStringLiteral("static-focus"), QStringLiteral("Use static review priority without Git history."));
     const QCommandLineOption followOpt(QStringLiteral("follow-renames"), QStringLiteral("Use Git --follow's file-lineage heuristic (slower)."));
+    const QCommandLineOption focusHunksOpt(QStringLiteral("focus-hunks"), QStringLiteral("Estimate Review Focus from batched first-parent non-merge function hunks."));
     const QCommandLineOption contractsOpt(QStringLiteral("architecture"), QStringLiteral("Architecture contract JSON configuration."), QStringLiteral("file"));
     const QCommandLineOption contractsJsonOpt(QStringLiteral("architecture-json"), QStringLiteral("Write architecture contract results as JSON (- for stdout)."), QStringLiteral("file"));
     const QCommandLineOption failContractsOpt(QStringLiteral("fail-on-architecture"), QStringLiteral("Exit 3 for architecture violations; configuration errors exit 2."));
     const QCommandLineOption impactOpt(QStringLiteral("include-impact"), QStringLiteral("Write top 20 header-impact estimates and witnesses as JSON (- for stdout)."), QStringLiteral("file"));
     parser.addOptions({reportOpt, saveOpt, loadOpt, threadsOpt, dumpOpt, argOpt, focusOpt, focusJsonOpt, daysOpt, revisionOpt,
-                       staticOpt, followOpt, contractsOpt, contractsJsonOpt, failContractsOpt, impactOpt});
+                       staticOpt, followOpt, focusHunksOpt, contractsOpt, contractsJsonOpt, failContractsOpt, impactOpt});
     parser.process(app);
 
     QTextStream err(stderr);
@@ -60,6 +61,10 @@ int main(int argc, char *argv[])
     }
     if (stdoutReports > 1 || (stdoutReports && parser.isSet(dumpOpt))) {
         err << "Select only one stdout report, without --dump\n";
+        return 2;
+    }
+    if (parser.isSet(focusHunksOpt) && !parser.isSet(focusOpt) && !parser.isSet(focusJsonOpt)) {
+        err << "--focus-hunks requires --focus or --focus-json\n";
         return 2;
     }
     QTextStream standardOutput(stdout);
@@ -122,6 +127,10 @@ int main(int argc, char *argv[])
         << ", " << st.indexMs << " ms\n";
 
     if (parser.isSet(focusOpt) || parser.isSet(focusJsonOpt)) {
+        if (parser.isSet(focusHunksOpt) && parser.isSet(staticOpt)) {
+            err << "--focus-hunks cannot be combined with --static-focus\n";
+            return 1;
+        }
         bool ok = false;
         const int days = parser.value(daysOpt).toInt(&ok);
         if (!ok || days < 1 || days > 3650) {
@@ -138,7 +147,17 @@ int main(int argc, char *argv[])
                 return 1;
             }
         }
-        const auto result = Focus::rank(model, parser.isSet(staticOpt) ? nullptr : &activity);
+        Focus::Options focusOptions;
+        History::HunkActivity hunkActivity;
+        if (parser.isSet(focusHunksOpt)) {
+            hunkActivity = History::functionHunks(activity.repository, activity.revision, activity.since, activity.until, model);
+            if (!hunkActivity.ready()) {
+                err << (hunkActivity.error.isEmpty() ? QStringLiteral("Function hunk history is unavailable") : hunkActivity.error) << "\n";
+                return 1;
+            }
+            focusOptions.functionHunks = &hunkActivity;
+        }
+        const auto result = Focus::rank(model, parser.isSet(staticOpt) ? nullptr : &activity, focusOptions);
         if (!result.error.isEmpty()) {
             err << result.error << "\n";
             return 1;

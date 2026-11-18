@@ -13,6 +13,7 @@ class ReviewFocus : public QAbstractListModel
     QML_ELEMENT
     Q_PROPERTY(bool changedOnly READ changedOnly WRITE setChangedOnly NOTIFY optionsChanged)
     Q_PROPERTY(bool historical READ historical WRITE setHistorical NOTIFY optionsChanged)
+    Q_PROPERTY(bool functionHistory READ functionHistory WRITE setFunctionHistory NOTIFY optionsChanged)
     Q_PROPERTY(bool showAll READ showAll WRITE setShowAll NOTIFY optionsChanged)
     Q_PROPERTY(int impactDepth READ impactDepth WRITE setImpactDepth NOTIFY optionsChanged)
     Q_PROPERTY(QString summary READ summary NOTIFY changed)
@@ -26,9 +27,11 @@ public:
     bool busy() const { return m_busy; }
     bool changedOnly() const { return m_changedOnly; }
     bool historical() const { return m_historical; }
+    bool functionHistory() const { return m_functionHistory; }
     bool showAll() const { return m_showAll; }
     void setChangedOnly(bool value);
     void setHistorical(bool value);
+    void setFunctionHistory(bool value);
     void setShowAll(bool value);
     int impactDepth() const { return m_impactDepth; }
     void setImpactDepth(int value);
@@ -48,7 +51,7 @@ signals:
 
 private:
     void reload();
-    bool m_changedOnly = false, m_historical = true, m_showAll = false;
+    bool m_changedOnly = false, m_historical = true, m_functionHistory = false, m_showAll = false;
     int m_impactDepth = 0;
     Unravel::Focus::Result m_result;
     std::shared_ptr<const Unravel::CodeModel> m_model;

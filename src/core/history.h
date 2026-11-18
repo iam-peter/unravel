@@ -61,6 +61,27 @@ Activity fileActivity(const QString &dir, const QString &revision, qint64 since,
                       const std::atomic_bool *cancel = nullptr, const QString &cacheDirectory = {},
                       bool refreshCache = false, bool followRenames = false);
 
+struct FunctionHunkStats {
+    qint64 commits = 0, lines = 0, ambiguousCommits = 0;
+    QSet<QString> ambiguity; // replacement, overlap, rename, post-revision
+};
+
+struct HunkActivity {
+    QString repository, revision, error;
+    qint64 since = 0, until = 0;
+    qint64 mappingCommits = 0; // first-parent commits diffed, including merge diffs used only for mapping
+    qint64 postRevisionChangedFiles = 0; // used for line mapping, never counted as historical activity
+    QHash<qint32, FunctionHunkStats> functions; // symbol ids in the supplied model
+    bool shallow = false, cancelled = false, firstParentOnly = true;
+
+    bool ready() const { return !repository.isEmpty() && !revision.isEmpty() && error.isEmpty() && !cancelled; }
+};
+
+// Batch zero-context diffs along the revision's first-parent line, carrying
+// changed lines to the current working tree and current function extents.
+HunkActivity functionHunks(const QString &dir, const QString &revision, qint64 since, qint64 until,
+                           const CodeModel &model, const std::atomic_bool *cancel = nullptr);
+
 struct Blame {
     QString text, error;
     bool cancelled = false;

@@ -251,6 +251,20 @@ if(UNRAVEL_ENABLE_FLOW)
     if(TARGET unravel)
         add_dependencies(unravel unravel-flow)
     endif()
-    include(GNUInstallDirs)
-    install(TARGETS unravel-flow RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
+
+include(GNUInstallDirs)
+if(NOT UNRAVEL_CORE_ONLY AND UNRAVEL_CLANG_BUILD_RESOURCE_DIR)
+    get_filename_component(_clang_resource_version
+        "${UNRAVEL_CLANG_BUILD_RESOURCE_DIR}" NAME)
+    if(APPLE AND TARGET unravel)
+        install(DIRECTORY "${UNRAVEL_CLANG_BUILD_RESOURCE_DIR}/"
+            DESTINATION "$<TARGET_BUNDLE_DIR_NAME:unravel>/Contents/Resources/clang/${_clang_resource_version}")
+    elseif(WIN32)
+        install(DIRECTORY "${UNRAVEL_CLANG_BUILD_RESOURCE_DIR}/"
+            DESTINATION "${CMAKE_INSTALL_BINDIR}/lib/clang/${_clang_resource_version}")
+    else()
+        install(DIRECTORY "${UNRAVEL_CLANG_BUILD_RESOURCE_DIR}/"
+            DESTINATION "${CMAKE_INSTALL_LIBDIR}/clang/${_clang_resource_version}")
+    endif()
 endif()

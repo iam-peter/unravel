@@ -41,14 +41,34 @@ Result rank(const CodeModel &model, const History::Activity *activity, const Opt
         }
         frontier = std::move(next);
     }
-    result.historical = activity && activity->ready();
+    result.functionHistory = options.functionHunks;
+    result.historical = (activity && activity->ready()) || options.functionHunks;
     if (result.historical) {
-        result.partial = activity->shallow;
-        result.followedRenames = activity->followedRenames;
-        result.revision = activity->revision;
-        result.since = activity->since;
-        result.until = activity->until;
+        if (activity && activity->ready()) {
+            result.partial = activity->shallow;
+            result.followedRenames = activity->followedRenames;
+            result.revision = activity->revision;
+            result.since = activity->since;
+            result.until = activity->until;
+        } else if (options.functionHunks) {
+            result.partial = options.functionHunks->shallow;
+            result.revision = options.functionHunks->revision;
+            result.since = options.functionHunks->since;
+            result.until = options.functionHunks->until;
+        }
+        result.firstParentHistory = options.functionHunks && options.functionHunks->firstParentOnly;
+        result.mappingCommits = options.functionHunks ? options.functionHunks->mappingCommits : 0;
+        result.postRevisionChangedFiles = options.functionHunks
+            ? options.functionHunks->postRevisionChangedFiles : 0;
     }
+    if (options.functionHunks && !options.functionHunks->ready()) {
+        result.error = options.functionHunks->error.isEmpty()
+            ? QStringLiteral("Function hunk history is unavailable") : options.functionHunks->error;
+        return result;
+    }
+    const QString historyRepository = options.functionHunks ? options.functionHunks->repository
+        : activity ? activity->repository : QString();
+    QVector<qint64> fileCommits(model.files.size(), -1);
     for (qint32 id = 0; id < model.symbols.size(); ++id) {
         if (options.cancel && options.cancel->load()) {
             result.entries.clear();
@@ -73,19 +93,34 @@ Result rank(const CodeModel &model, const History::Activity *activity, const Opt
         entry.neighbours = int(neighbours.size());
         entry.dependency = std::log2(1.0 + entry.neighbours);
         if (result.historical) {
-            const QString path = QDir(activity->repository).relativeFilePath(model.files[symbol.def.file].path);
-            if (QDir::isAbsolutePath(path) || path == QLatin1String("..") || path.startsWith(QLatin1String("../"))) {
-                result.error = QStringLiteral("Some functions are outside the history repository; use static priority");
-                result.entries.clear();
-                return result;
+            const qint32 file = symbol.def.file;
+            if (fileCommits[file] < 0) {
+                const QString path = QDir(historyRepository).relativeFilePath(model.files[file].path);
+                if (QDir::isAbsolutePath(path) || path == QLatin1String("..") || path.startsWith(QLatin1String("../"))) {
+                    result.error = QStringLiteral("Some functions are outside the history repository; use static priority");
+                    result.entries.clear();
+                    return result;
+                }
+                fileCommits[file] = activity && activity->ready() ? activity->files.value(path).commits : 0;
             }
-            entry.commits = activity->files.value(path).commits;
-            entry.history = std::log2(1.0 + entry.commits);
+            entry.commits = fileCommits[file];
+            if (options.functionHunks) {
+                const History::FunctionHunkStats stats = options.functionHunks->functions.value(id);
+                entry.hunkCommits = stats.commits;
+                entry.hunkLines = stats.lines;
+                entry.ambiguousHunks = stats.ambiguousCommits;
+                for (const QString &reason : stats.ambiguity)
+                    entry.hunkAmbiguity.append(reason);
+                entry.hunkAmbiguity.sort();
+                entry.history = std::log2(1.0 + entry.hunkCommits);
+            } else {
+                entry.history = std::log2(1.0 + entry.commits);
+            }
         }
         entry.priority = entry.complexity * (1.0 + entry.history) * (1.0 + 0.25 * entry.dependency);
         result.entries.append(entry);
     }
-    std::sort(result.entries.begin(), result.entries.end(), [&](const Entry &a, const Entry &b) {
+    const auto before = [&](const Entry &a, const Entry &b) {
         if (a.priority != b.priority)
             return a.priority > b.priority;
         const auto &x = model.symbols[a.symbol], &y = model.symbols[b.symbol];
@@ -98,11 +133,17 @@ Result rank(const CodeModel &model, const History::Activity *activity, const Opt
             return x.def.line < y.def.line;
         if (x.def.col != y.def.col)
             return x.def.col < y.def.col;
-        return x.usr < y.usr;
-    });
+        if (x.usr != y.usr)
+            return x.usr < y.usr;
+        return a.symbol < b.symbol;
+    };
     result.eligible = int(result.entries.size());
-    if (options.limit > 0 && result.entries.size() > options.limit)
+    if (options.limit > 0 && result.entries.size() > options.limit) {
+        std::partial_sort(result.entries.begin(), result.entries.begin() + options.limit, result.entries.end(), before);
         result.entries.resize(options.limit);
+    } else {
+        std::sort(result.entries.begin(), result.entries.end(), before);
+    }
     return result;
 }
 
@@ -117,16 +158,34 @@ QJsonObject json(const CodeModel &model, const Result &result)
             {QStringLiteral("historyFactor"), entry.history}, {QStringLiteral("dependencyFactor"), entry.dependency},
             {QStringLiteral("distinctNeighbours"), entry.neighbours}, {QStringLiteral("fileCommits"), entry.commits},
             {QStringLiteral("touched"), entry.touched},
-            {QStringLiteral("historyAttribution"), result.historical ? (result.followedRenames
-                    ? QStringLiteral("file-level Git --follow heuristic proxy") : QStringLiteral("file-level pathname proxy"))
-                                                                   : QStringLiteral("static priority")}});
+            {QStringLiteral("historyAttribution"), result.functionHistory
+                    ? QStringLiteral("first-parent non-merge function-hunk estimate; side-branch and merge commits are not counted; merge diffs only map lines")
+                    : result.historical ? (result.followedRenames
+                        ? QStringLiteral("file-level Git --follow heuristic proxy; all reachable non-merge commits")
+                        : QStringLiteral("file-level pathname proxy; all reachable non-merge commits"))
+                                        : QStringLiteral("static priority")},
+            {QStringLiteral("functionHunkCommits"), entry.hunkCommits},
+            {QStringLiteral("functionHunkLines"), entry.hunkLines},
+            {QStringLiteral("ambiguousHunkCommits"), entry.ambiguousHunks},
+            {QStringLiteral("hunkAmbiguity"), QJsonArray::fromStringList(entry.hunkAmbiguity)}});
     }
     return {{QStringLiteral("heuristicVersion"), 1}, {QStringLiteral("error"), result.error},
         {QStringLiteral("scope"), result.impactDepth > 0 ? QStringLiteral("touched-plus-potential-dependents")
             : result.changedOnly ? QStringLiteral("touched-functions") : QStringLiteral("project")},
         {QStringLiteral("potentialImpactDepth"), result.impactDepth},
-        {QStringLiteral("mode"), result.historical ? QStringLiteral("historical-file-proxy") : QStringLiteral("static")},
+        {QStringLiteral("mode"), result.functionHistory ? QStringLiteral("historical-function-hunk-estimate")
+            : result.historical ? QStringLiteral("historical-file-proxy") : QStringLiteral("static")},
         {QStringLiteral("coverage"), result.partial ? QStringLiteral("partial-shallow") : QStringLiteral("indexed-project")},
+        {QStringLiteral("firstParentOnly"), result.firstParentHistory},
+        {QStringLiteral("lineMappingCommits"), result.mappingCommits},
+        {QStringLiteral("historySemantics"), result.functionHistory
+            ? QStringLiteral("Function hunk counts include only non-merge commits on the first-parent chain; side-branch and merge commits are not counted (first-parent merge diffs only map lines). The file-level proxy counts all reachable non-merge commits.")
+            : result.historical ? QStringLiteral("File-level proxy counts all reachable non-merge commits; working-tree changes are not counted.")
+                                : QStringLiteral("Static priority; no Git history used.")},
+        {QStringLiteral("postRevisionChangedFiles"), result.postRevisionChangedFiles},
+        {QStringLiteral("postRevisionPolicy"), result.functionHistory
+            ? QStringLiteral("Changes from the selected revision to the current working tree are used only to map lines; they are not counted as historical commits.")
+            : QString()},
         {QStringLiteral("revision"), result.revision}, {QStringLiteral("since"), result.since},
         {QStringLiteral("until"), result.until}, {QStringLiteral("eligible"), result.eligible},
         {QStringLiteral("functions"), entries}};
@@ -138,9 +197,21 @@ QString markdown(const CodeModel &model, const Result &result)
     QTextStream out(&text);
     out << "# Review Focus\n\nHeuristic v1; "
         << (result.changedOnly ? "touched functions" : "whole project") << "; "
-        << (result.historical ? (result.followedRenames ? "file-level Git --follow heuristic proxy"
-                                                       : "file-level pathname history proxy (renames not followed)") : "static priority")
+        << (result.functionHistory
+            ? "first-parent non-merge function-hunk estimate (side-branch and merge commits are not counted; first-parent merge diffs only map lines; file proxy counts all reachable non-merge commits)"
+            : result.historical ? (result.followedRenames ? "file-level Git --follow heuristic proxy over all reachable non-merge commits"
+                                                          : "file-level pathname proxy over all reachable non-merge commits") : "static priority")
+        << (result.firstParentHistory ? "; first-parent history only" : "")
         << (result.partial ? "; partial shallow history" : "") << ". Not a defect probability.\n\n";
+    if (result.functionHistory) {
+        out << "The line-mapping span traverses " << result.mappingCommits
+            << " first-parent commits (merge diffs only map lines). Changes from the selected revision to the current working tree are used only for line mapping, not counted as historical commits";
+        if (result.postRevisionChangedFiles > 0)
+            out << " (" << result.postRevisionChangedFiles << " changed files)";
+        out << ".\n\n";
+    } else if (result.historical) {
+        out << "Working-tree changes are not included in file commit counts.\n\n";
+    }
     if (!result.error.isEmpty()) {
         out << "Error: " << result.error << "\n";
         return text;
@@ -157,8 +228,13 @@ QString markdown(const CodeModel &model, const Result &result)
         out << "- `" << name << "` at " << model.locationText(model.symbols[entry.symbol].def)
             << " - priority " << QString::number(entry.priority, 'f', 2)
             << "; C=" << entry.complexity << ", H=" << entry.history << ", D=" << entry.dependency;
-        if (result.historical)
+        if (result.functionHistory)
+            out << "; function hunk commits=" << entry.hunkCommits << ", mapped lines=" << entry.hunkLines
+                << ", ambiguous commits=" << entry.ambiguousHunks;
+        else if (result.historical)
             out << "; file commits=" << entry.commits;
+        if (!entry.hunkAmbiguity.isEmpty())
+            out << " (" << entry.hunkAmbiguity.join(QStringLiteral(", ")) << ")";
         if (result.changedOnly)
             out << (entry.touched ? "; touched" : "; potential dependent");
         out << "\n";

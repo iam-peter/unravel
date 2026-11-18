@@ -15,6 +15,7 @@
 #include <QTimeZone>
 
 #include <algorithm>
+#include <functional>
 
 namespace Unravel::History {
 
@@ -107,6 +108,8 @@ qint32 lineCount(const QString &path)
     const QByteArray data = f.readAll();
     return qint32(data.count('\n') + (data.isEmpty() || data.endsWith('\n') ? 0 : 1));
 }
+
+QVector<FileDiff> parseDiffChecked(const QByteArray &diff, const std::function<bool()> &checkpoint);
 
 } // namespace
 
@@ -387,6 +390,433 @@ Activity fileActivity(const QString &dir, const QString &revision, qint64 since,
     return result;
 }
 
+HunkActivity functionHunks(const QString &dir, const QString &revision, qint64 since, qint64 until,
+                           const CodeModel &model, const std::atomic_bool *cancel)
+{
+    HunkActivity result;
+    result.since = since;
+    result.until = until;
+    if (since < 0 || until < since) {
+        result.error = QStringLiteral("Invalid Git history time window");
+        return result;
+    }
+    if (!QDateTime::fromSecsSinceEpoch(since, QTimeZone::UTC).isValid()
+        || !QDateTime::fromSecsSinceEpoch(until, QTimeZone::UTC).isValid()) {
+        result.error = QStringLiteral("Git history window is outside the supported date range");
+        return result;
+    }
+
+    QString workingDirectory = dir;
+    QByteArray output;
+    auto query = [&](const QStringList &args) {
+        const bool ok = runGit(workingDirectory, args, &output, &result.error, cancel,
+                               120000, 128 * 1024 * 1024);
+        result.cancelled = cancel && cancel->load();
+        return ok && !result.cancelled;
+    };
+    if (!query({QStringLiteral("rev-parse"), QStringLiteral("--show-toplevel")})) {
+        if (!result.cancelled && result.error.contains(QLatin1String("not a git repository")))
+            result.error = QStringLiteral("Function hunk history requires a Git repository");
+        return result;
+    }
+    result.repository = QDir::cleanPath(QString::fromUtf8(output).trimmed());
+    workingDirectory = result.repository;
+    if (!query({QStringLiteral("rev-parse"), QStringLiteral("--verify"), QStringLiteral("--end-of-options"),
+                revision + QStringLiteral("^{commit}")}))
+        return result;
+    result.revision = QString::fromUtf8(output).trimmed();
+    if (!query({QStringLiteral("rev-parse"), QStringLiteral("--is-shallow-repository")}))
+        return result;
+    result.shallow = output.trimmed() == "true";
+
+    struct CommitDiff {
+        QString hash;
+        qint64 time = 0;
+        bool merge = false;
+        QVector<FileDiff> files;
+    };
+    constexpr int maxCommits = 10000;
+    constexpr qint64 maxMetadataCommits = 1000000;
+    constexpr qint64 maxMappingWork = 2000000;
+    QElapsedTimer mappingTimer;
+    mappingTimer.start();
+    qint64 mappingWork = 0;
+    auto consumeMappingWork = [&](qint64 amount = 1) {
+        mappingWork += amount;
+        if (cancel && cancel->load()) {
+            result.cancelled = true;
+            result.error = QStringLiteral("Git function hunk mapping cancelled");
+            return false;
+        }
+        if (mappingTimer.elapsed() >= 120000) {
+            result.error = QStringLiteral("Function hunk mapping exceeded two minutes; choose a shorter window or revision");
+            return false;
+        }
+        if (mappingWork > maxMappingWork) {
+            result.error = QStringLiteral("Function hunk mapping exceeded two million operations; choose a shorter window");
+            return false;
+        }
+        return true;
+    };
+
+    // Walk commit metadata without patches first. Timestamps can be out of
+    // order, so scan the bounded first-parent chain rather than stopping at
+    // the first commit older than `since`.
+    const QStringList metadataArgs{QStringLiteral("rev-list"), QStringLiteral("--first-parent"),
+        QStringLiteral("--timestamp"), QStringLiteral("--parents"),
+        QStringLiteral("--max-count=%1").arg(maxMetadataCommits + 1), result.revision};
+    if (!query(metadataArgs)) {
+        if (!result.cancelled && (result.error.contains(QLatin1String("output is too large"))
+                                  || result.error.contains(QLatin1String("timed out"))))
+            result.error = QStringLiteral("First-parent metadata walk exceeded its time/output bound; use a shallower history boundary");
+        return result;
+    }
+    QElapsedTimer metadataTimer;
+    metadataTimer.start();
+    qint64 metadataCount = 0;
+    qint64 oldestEligibleIndex = -1;
+    for (qsizetype pos = 0; pos < output.size();) {
+        if (cancel && cancel->load()) {
+            result.cancelled = true;
+            result.error = QStringLiteral("Git function hunk metadata walk cancelled");
+            return result;
+        }
+        if (metadataTimer.elapsed() >= 120000) {
+            result.error = QStringLiteral("First-parent metadata walk exceeded two minutes; use a shallower history boundary");
+            return result;
+        }
+        const qsizetype end = output.indexOf('\n', pos);
+        const QByteArray record = output.mid(pos, end < 0 ? output.size() - pos : end - pos);
+        pos = end < 0 ? output.size() : end + 1;
+        if (record.isEmpty())
+            continue;
+        const qsizetype firstSpace = record.indexOf(' ');
+        const qsizetype secondSpace = firstSpace < 0 ? -1 : record.indexOf(' ', firstSpace + 1);
+        if (firstSpace <= 0) {
+            result.error = QStringLiteral("Invalid first-parent history metadata record");
+            return result;
+        }
+        bool timeOk = false;
+        const qint64 time = record.left(firstSpace).toLongLong(&timeOk);
+        const QByteArray hash = record.mid(firstSpace + 1,
+            (secondSpace < 0 ? record.size() : secondSpace) - firstSpace - 1);
+        const QByteArray parents = secondSpace < 0 ? QByteArray() : record.mid(secondSpace + 1).trimmed();
+        if (!timeOk || (hash.size() != 40 && hash.size() != 64)) {
+            result.error = QStringLiteral("Invalid first-parent history metadata");
+            return result;
+        }
+        const bool merge = parents.contains(' ');
+        if (!merge && time >= since && time <= until)
+            oldestEligibleIndex = metadataCount;
+        ++metadataCount;
+        if (metadataCount > maxMetadataCommits) {
+            result.error = QStringLiteral("First-parent metadata walk exceeds one million commits; use a shallower history boundary");
+            return result;
+        }
+    }
+    if (oldestEligibleIndex < 0)
+        return result;
+    const qint64 mappingSpan = oldestEligibleIndex + 1;
+    if (mappingSpan > maxCommits) {
+        result.error = QStringLiteral("Required first-parent line-mapping span exceeds 10,000 commits; choose a shorter window or a revision closer to it");
+        return result;
+    }
+    result.mappingCommits = mappingSpan;
+
+    const QByteArray marker("UNRAVEL-FUNCTION-HUNK-COMMIT");
+    const QStringList logArgs{
+        QStringLiteral("log"), QStringLiteral("--first-parent"), QStringLiteral("--diff-merges=first-parent"),
+        QStringLiteral("--no-show-signature"), QStringLiteral("--no-notes"), QStringLiteral("--no-color"),
+        QStringLiteral("--no-ext-diff"), QStringLiteral("--no-textconv"), QStringLiteral("--find-renames"),
+        QStringLiteral("-U0"),
+        QStringLiteral("--format=%x00UNRAVEL-FUNCTION-HUNK-COMMIT%x00%H%x00%ct%x00%P%x00"),
+        QStringLiteral("--max-count=%1").arg(mappingSpan), result.revision, QStringLiteral("--")
+    };
+    if (!query(logArgs))
+        return result;
+
+    const QList<QByteArray> records = output.split('\0');
+    QVector<CommitDiff> commits;
+    for (qsizetype i = 1; i < records.size();) {
+        if (!consumeMappingWork())
+            return result;
+        if (records[i] != marker) {
+            if (records[i].trimmed().isEmpty()) {
+                ++i;
+                continue;
+            }
+            result.error = QStringLiteral("Invalid batched Git function-diff record");
+            return result;
+        }
+        if (i + 4 >= records.size()) {
+            result.error = QStringLiteral("Incomplete batched Git function-diff record");
+            return result;
+        }
+        CommitDiff commit;
+        commit.hash = QString::fromLatin1(records[i + 1]);
+        bool timeOk = false;
+        commit.time = records[i + 2].toLongLong(&timeOk);
+        if ((commit.hash.size() != 40 && commit.hash.size() != 64) || !timeOk) {
+            result.error = QStringLiteral("Invalid batched Git function-diff metadata");
+            return result;
+        }
+        commit.merge = !records[i + 3].trimmed().isEmpty()
+            && records[i + 3].trimmed().contains(' ');
+        commit.files = parseDiffChecked(records[i + 4], [&] { return consumeMappingWork(); });
+        if (result.cancelled || !result.error.isEmpty())
+            return result;
+        commits.append(std::move(commit));
+        i += 5;
+    }
+    if (commits.size() != mappingSpan) {
+        result.error = QStringLiteral("Incomplete first-parent function-diff mapping span");
+        return result;
+    }
+
+    // This final step maps selected-revision lines into the indexed working
+    // tree. Changes after the revision are never counted as historical commits.
+    if (!query({QStringLiteral("diff"), QStringLiteral("-U0"), QStringLiteral("--no-color"),
+                QStringLiteral("--no-ext-diff"), QStringLiteral("--no-textconv"),
+                QStringLiteral("--find-renames"), result.revision, QStringLiteral("--")}))
+        return result;
+    const QVector<FileDiff> workingTreeDiff = parseDiffChecked(output, [&] { return consumeMappingWork(); });
+    if (result.cancelled || !result.error.isEmpty())
+        return result;
+    result.postRevisionChangedFiles = workingTreeDiff.size();
+    if (!query({QStringLiteral("ls-files"), QStringLiteral("-z")}))
+        return result;
+    QSet<QString> trackedPaths;
+    for (const QByteArray &path : output.split('\0')) {
+        if (!consumeMappingWork())
+            return result;
+        if (!path.isEmpty())
+            trackedPaths.insert(QString::fromUtf8(path));
+    }
+
+    struct Extent {
+        qint32 symbol = -1, first = 0, last = 0;
+    };
+    QHash<QString, QVector<Extent>> extents;
+    for (qint32 file = 0; file < model.files.size(); ++file) {
+        if (!consumeMappingWork())
+            return result;
+        if (!model.files[file].project || model.files[file].generated)
+            continue;
+        const QString path = QDir(result.repository).relativeFilePath(model.files[file].path);
+        if (QDir::isAbsolutePath(path) || path == QLatin1String("..") || path.startsWith(QLatin1String("../")))
+            continue;
+        auto &items = extents[path];
+        for (qint32 symbol : model.files[file].symbols) {
+            if (!consumeMappingWork())
+                return result;
+            const Symbol &function = model.symbols[symbol];
+            if (!isFunction(function.kind) || !function.def.valid() || function.has(External)
+                || function.has(Generated) || function.has(Implicit) || function.has(FromMacro)
+                || function.def.file != file)
+                continue;
+            items.append({symbol, function.def.line, function.def.endLine});
+        }
+        if (!items.isEmpty() && !trackedPaths.contains(path)) {
+            result.error = QStringLiteral("Function hunk history cannot estimate untracked project file '%1'; no zero-history estimate was produced")
+                               .arg(path);
+            return result;
+        }
+        std::sort(items.begin(), items.end(), [](const Extent &a, const Extent &b) {
+            if (a.first != b.first)
+                return a.first < b.first;
+            return a.last < b.last;
+        });
+    }
+
+    struct MappingResult {
+        QString path;
+        qint32 line = 0;
+        QSet<QString> ambiguity;
+        bool valid = true;
+    };
+    auto mapMappedLine = [&](const QVector<Hunk> &hunks, qint32 *line, bool *changed) {
+        if (changed)
+            *changed = false;
+        const qint32 originalLine = *line;
+        qint32 offset = 0;
+        for (const Hunk &hunk : hunks) {
+            if (!consumeMappingWork())
+                return false;
+            if (hunk.oldCount > 0 && originalLine >= hunk.oldStart
+                && originalLine < hunk.oldStart + hunk.oldCount) {
+                if (changed)
+                    *changed = true;
+                *line = std::max(1, hunk.newStart);
+                return true;
+            }
+            const qint32 lastOld = hunk.oldCount > 0 ? hunk.oldStart + hunk.oldCount - 1 : hunk.oldStart;
+            if (lastOld < originalLine)
+                offset += hunk.newCount - hunk.oldCount;
+            else
+                break;
+        }
+        *line = std::max(1, originalLine + offset);
+        return true;
+    };
+    auto advance = [&](const QVector<FileDiff> &diffs, MappingResult &mapped, bool postRevision = false) {
+        const FileDiff *step = nullptr;
+        for (const FileDiff &diff : diffs) {
+            if (!consumeMappingWork())
+                return false;
+            if (diff.oldPath == mapped.path) {
+                step = &diff;
+                break;
+            }
+        }
+        if (!step)
+            return true;
+        bool replaced = false;
+        if (!mapMappedLine(step->hunks, &mapped.line, &replaced))
+            return false;
+        if (replaced) {
+            mapped.ambiguity.insert(QStringLiteral("replacement"));
+            if (postRevision)
+                mapped.ambiguity.insert(QStringLiteral("post-revision"));
+        }
+        if (step->newPath.isEmpty()) {
+            mapped.valid = false;
+            mapped.ambiguity.insert(QStringLiteral("replacement"));
+            return true;
+        }
+        if (step->newPath != mapped.path) {
+            mapped.path = step->newPath;
+            mapped.ambiguity.insert(QStringLiteral("rename"));
+            if (postRevision)
+                mapped.ambiguity.insert(QStringLiteral("post-revision"));
+        }
+        return true;
+    };
+
+    constexpr qint64 maxMappedLines = 2000000;
+    qint64 mappedLineCount = 0;
+    for (qsizetype index = 0; index < commits.size(); ++index) {
+        if (!consumeMappingWork()) {
+            result.functions.clear();
+            return result;
+        }
+        const CommitDiff &commit = commits[index];
+        const bool inWindow = commit.time >= since && commit.time <= until && !commit.merge;
+        if (!inWindow)
+            continue;
+
+        QHash<qint32, QSet<qint32>> linesByFunction;
+        QHash<qint32, QSet<QString>> ambiguityByFunction;
+        for (const FileDiff &fileDiff : commit.files) {
+            if (!consumeMappingWork()) {
+                result.functions.clear();
+                return result;
+            }
+            if (fileDiff.newPath.isEmpty())
+                continue;
+            const QString originalPath = fileDiff.newPath;
+            for (const Hunk &hunk : fileDiff.hunks) {
+                if (!consumeMappingWork()) {
+                    result.functions.clear();
+                    return result;
+                }
+                const qint32 count = hunk.newCount > 0 ? hunk.newCount : 1;
+                for (qint32 offset = 0; offset < count; ++offset) {
+                    if (++mappedLineCount > maxMappedLines) {
+                        result.error = QStringLiteral("Function hunk history exceeds two million changed lines; choose a shorter time window");
+                        result.functions.clear();
+                        return result;
+                    }
+                    if (!consumeMappingWork()) {
+                        result.functions.clear();
+                        return result;
+                    }
+                    MappingResult mapped{originalPath, hunk.newCount > 0
+                        ? hunk.newStart + offset : std::max(1, hunk.newStart), {}, true};
+                    if (hunk.newCount == 0)
+                        mapped.ambiguity.insert(QStringLiteral("replacement"));
+
+                    // Commits are newest first. Apply newer transitions in
+                    // chronological order, then carry into the work tree.
+                    for (qsizetype newer = index - 1; newer >= 0 && mapped.valid; --newer) {
+                        if (!consumeMappingWork() || !advance(commits[newer].files, mapped)) {
+                            result.functions.clear();
+                            return result;
+                        }
+                    }
+                    if (mapped.valid && !advance(workingTreeDiff, mapped, true)) {
+                        result.functions.clear();
+                        return result;
+                    }
+                    if (!mapped.valid)
+                        continue;
+
+                    const auto functions = extents.constFind(mapped.path);
+                    if (functions == extents.cend())
+                        continue;
+                    QVector<qint32> owners;
+                    for (const Extent &extent : *functions) {
+                        if (!consumeMappingWork()) {
+                            result.functions.clear();
+                            return result;
+                        }
+                        if (extent.first > mapped.line)
+                            break;
+                        if (mapped.line <= extent.last)
+                            owners.append(extent.symbol);
+                    }
+                    if (owners.isEmpty())
+                        continue;
+                    if (owners.size() > 1)
+                        mapped.ambiguity.insert(QStringLiteral("overlap"));
+                    for (qint32 symbol : owners) {
+                        if (!consumeMappingWork()) {
+                            result.functions.clear();
+                            return result;
+                        }
+                        if (mapped.ambiguity.contains(QStringLiteral("overlap"))) {
+                            ambiguityByFunction[symbol].unite(mapped.ambiguity);
+                        } else {
+                            linesByFunction[symbol].insert(mapped.line);
+                            ambiguityByFunction[symbol].unite(mapped.ambiguity);
+                        }
+                    }
+                }
+            }
+        }
+        QSet<qint32> affected;
+        for (auto it = linesByFunction.cbegin(); it != linesByFunction.cend(); ++it) {
+            if (!consumeMappingWork()) {
+                result.functions.clear();
+                return result;
+            }
+            affected.insert(it.key());
+        }
+        for (auto it = ambiguityByFunction.cbegin(); it != ambiguityByFunction.cend(); ++it) {
+            if (!consumeMappingWork()) {
+                result.functions.clear();
+                return result;
+            }
+            affected.insert(it.key());
+        }
+        for (qint32 symbol : std::as_const(affected)) {
+            if (!consumeMappingWork()) {
+                result.functions.clear();
+                return result;
+            }
+            FunctionHunkStats &stats = result.functions[symbol];
+            if (!linesByFunction.value(symbol).isEmpty())
+                ++stats.commits;
+            stats.lines += linesByFunction.value(symbol).size();
+            const QSet<QString> ambiguity = ambiguityByFunction.value(symbol);
+            if (!ambiguity.isEmpty()) {
+                ++stats.ambiguousCommits;
+                stats.ambiguity.unite(ambiguity);
+            }
+        }
+    }
+    return result;
+}
+
 Blame blame(const QString &directory, const QString &path, int firstLine, const std::atomic_bool *cancel)
 {
     Blame result;
@@ -475,7 +905,9 @@ Blame blame(const QString &directory, const QString &path, int firstLine, const 
     return result;
 }
 
-QVector<FileDiff> parseDiff(const QByteArray &diff)
+namespace {
+
+QVector<FileDiff> parseDiffChecked(const QByteArray &diff, const std::function<bool()> &checkpoint)
 {
     QVector<FileDiff> files;
     FileDiff *cur = nullptr;
@@ -491,7 +923,15 @@ QVector<FileDiff> parseDiff(const QByteArray &diff)
         *start = (comma < 0 ? s : s.left(comma)).toInt();
         *count = comma < 0 ? 1 : s.mid(comma + 1).toInt();
     };
-    for (const QByteArray &line : diff.split('\n')) {
+    for (qsizetype pos = 0; pos <= diff.size();) {
+        if (checkpoint && !checkpoint())
+            return {};
+        const qsizetype end = diff.indexOf('\n', pos);
+        const QByteArray line = diff.mid(pos, end < 0 ? diff.size() - pos : end - pos);
+        if (end < 0)
+            pos = diff.size() + 1;
+        else
+            pos = end + 1;
         if (line.startsWith("diff --git ")) {
             files.append(FileDiff());
             cur = &files.last();
@@ -527,6 +967,13 @@ QVector<FileDiff> parseDiff(const QByteArray &diff)
         }
     }
     return files;
+}
+
+} // namespace
+
+QVector<FileDiff> parseDiff(const QByteArray &diff)
+{
+    return parseDiffChecked(diff, {});
 }
 
 qint32 mapLine(const QVector<Hunk> &hunks, qint32 line, bool *changedSince)

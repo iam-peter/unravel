@@ -1,4 +1,5 @@
 #include "flow.h"
+#include "facts.h"
 
 #include <clang/AST/ASTConsumer.h>
 #include <clang/AST/RecursiveASTVisitor.h>
@@ -42,36 +43,6 @@ QString canonical(const QString &path) {
   return QDir::cleanPath(real.isEmpty() ? info.absoluteFilePath() : real);
 }
 
-QJsonObject location(const clang::SourceManager &sm,
-                     const clang::LangOptions &lang, clang::SourceRange range) {
-  QJsonObject out;
-  if (range.isInvalid())
-    return out;
-  const clang::SourceLocation begin = sm.getExpansionLoc(range.getBegin());
-  const clang::SourceLocation end = sm.getExpansionLoc(range.getEnd());
-  if (begin.isInvalid() || end.isInvalid() || sm.isInSystemHeader(begin))
-    return out;
-  const auto start = sm.getPresumedLoc(begin);
-  const auto finish = sm.getPresumedLoc(end);
-  if (start.isInvalid() || finish.isInvalid())
-    return out;
-  out.insert(QStringLiteral("file"), QString::fromUtf8(start.getFilename()));
-  out.insert(QStringLiteral("line"), int(start.getLine()));
-  out.insert(QStringLiteral("column"), int(start.getColumn()));
-  out.insert(QStringLiteral("endLine"), int(finish.getLine()));
-  out.insert(QStringLiteral("endColumn"), int(finish.getColumn()));
-  const auto text = clang::Lexer::getSourceText(
-      clang::CharSourceRange::getTokenRange(range), sm, lang);
-  if (!text.empty()) {
-    QString snippet =
-        QString::fromUtf8(text.data(), qsizetype(text.size())).simplified();
-    if (snippet.size() > 200)
-      snippet = snippet.left(197) + QStringLiteral("...");
-    out.insert(QStringLiteral("text"), snippet);
-  }
-  return out;
-}
-
 QString edgeKind(const clang::CFGBlock &from, const clang::CFGBlock &to) {
   const clang::Stmt *targetLabel = to.getLabel();
   if (llvm::isa_and_nonnull<clang::SwitchStmt>(from.getTerminatorStmt()) &&
@@ -84,128 +55,6 @@ QString edgeKind(const clang::CFGBlock &from, const clang::CFGBlock &to) {
       return QStringLiteral("switch-fallthrough");
   }
   return QStringLiteral("flow");
-}
-
-QJsonObject experimentalFacts(clang::FunctionDecl *function,
-                              clang::ASTContext &context) {
-  class Collector final : public clang::RecursiveASTVisitor<Collector> {
-  public:
-    Collector(clang::FunctionDecl *root, clang::ASTContext &context)
-        : root(root), context(context), sm(context.getSourceManager()),
-          lang(context.getLangOpts()) {}
-
-    bool TraverseFunctionDecl(clang::FunctionDecl *decl) {
-      if (decl != root)
-        return true;
-      return clang::RecursiveASTVisitor<Collector>::TraverseFunctionDecl(decl);
-    }
-
-    bool TraverseLambdaExpr(clang::LambdaExpr *) { return true; }
-
-    bool VisitVarDecl(clang::VarDecl *decl) {
-      const clang::QualType type = decl->getType().getCanonicalType();
-      QString shape;
-      if (type->isPointerType())
-        shape = QStringLiteral("pointer-type");
-      else if (type->isLValueReferenceType())
-        shape = QStringLiteral("lvalue-reference-type");
-      else if (type->isRValueReferenceType())
-        shape = QStringLiteral("rvalue-reference-type");
-      if (!shape.isEmpty()) {
-        const QString key = QString::number(decl->getCanonicalDecl()->getID());
-        if (!seenTypes.contains(key)) {
-          seenTypes.insert(key);
-          QJsonObject item{
-              {QStringLiteral("name"),
-               QString::fromStdString(decl->getNameAsString())},
-              {QStringLiteral("type"),
-               QString::fromStdString(type.getAsString())},
-              {QStringLiteral("typeShape"), shape},
-              {QStringLiteral("declaration"),
-               location(sm, lang, decl->getSourceRange())},
-              {QStringLiteral("ownershipRole"), QStringLiteral("unknown")},
-              {QStringLiteral("borrowRole"), QStringLiteral("unknown")},
-              {QStringLiteral("lifetime"), QStringLiteral("not-analyzed")}};
-          typeObservations.append(item);
-        }
-      }
-
-      if (type->getAs<clang::EnumType>()) {
-        const clang::Expr *initializer = decl->getInit();
-        if (initializer)
-          appendEnumAssignment(QString::fromStdString(decl->getNameAsString()),
-                               type, initializer, decl->getSourceRange());
-      }
-      return true;
-    }
-
-    bool VisitBinaryOperator(clang::BinaryOperator *op) {
-      if (op->getOpcode() != clang::BO_Assign)
-        return true;
-      const clang::Expr *target = op->getLHS()->IgnoreParenImpCasts();
-      const auto *reference = llvm::dyn_cast<clang::DeclRefExpr>(target);
-      if (!reference || !reference->getType()->getAs<clang::EnumType>())
-        return true;
-      appendEnumAssignment(
-          QString::fromStdString(reference->getDecl()->getNameAsString()),
-          reference->getType(), op->getRHS(), op->getSourceRange());
-      return true;
-    }
-
-    QJsonArray enumAssignments;
-    QJsonArray typeObservations;
-
-  private:
-    void appendEnumAssignment(const QString &target, clang::QualType type,
-                              const clang::Expr *value,
-                              clang::SourceRange assignmentRange) {
-      value = value->IgnoreParenImpCasts();
-      const auto *enumeratorRef = llvm::dyn_cast<clang::DeclRefExpr>(value);
-      const auto *enumerator = enumeratorRef
-                                   ? llvm::dyn_cast<clang::EnumConstantDecl>(
-                                         enumeratorRef->getDecl())
-                                   : nullptr;
-      const auto *enumType = type->getAs<clang::EnumType>();
-      const auto *valueEnumType =
-          enumerator ? enumerator->getType()->getAs<clang::EnumType>()
-                     : nullptr;
-      if (!enumerator || !enumType || !valueEnumType ||
-          enumType->getDecl()->getCanonicalDecl() !=
-              valueEnumType->getDecl()->getCanonicalDecl())
-        return;
-      const std::string numeric = llvm::toString(enumerator->getInitVal(), 10);
-      enumAssignments.append(QJsonObject{
-          {QStringLiteral("target"), target},
-          {QStringLiteral("enumType"),
-           QString::fromStdString(
-               enumType->getDecl()->getQualifiedNameAsString())},
-          {QStringLiteral("enumerator"),
-           QString::fromStdString(enumerator->getNameAsString())},
-          {QStringLiteral("value"), QString::fromStdString(numeric)},
-          {QStringLiteral("assignment"), location(sm, lang, assignmentRange)},
-          {QStringLiteral("sourceProvenance"),
-           QStringLiteral("explicit-enumerator")},
-          {QStringLiteral("priorStateProvenance"), QStringLiteral("unknown")}});
-    }
-
-    clang::FunctionDecl *root;
-    clang::ASTContext &context;
-    const clang::SourceManager &sm;
-    const clang::LangOptions &lang;
-    QSet<QString> seenTypes;
-  };
-
-  Collector collector(function, context);
-  collector.TraverseFunctionDecl(function);
-  return {{QStringLiteral("enumAssignments"), collector.enumAssignments},
-          {QStringLiteral("pointerReferenceTypeObservations"),
-           collector.typeObservations},
-          {QStringLiteral("localDefUseSlices"),
-           QJsonObject{
-               {QStringLiteral("status"), QStringLiteral("not-implemented")},
-               {QStringLiteral("reason"),
-                QStringLiteral("No validated transfer model for aliases, call "
-                               "effects, and branch joins")}}}};
 }
 
 QJsonObject serialize(const clang::FunctionDecl *function,
@@ -242,6 +91,16 @@ QJsonObject serialize(const clang::FunctionDecl *function,
       QJsonObject item{{QStringLiteral("kind"),
                         QString::fromLatin1(stmt->getStmtClassName())},
                        {QStringLiteral("source"), source}};
+      if (const auto *call = llvm::dyn_cast<clang::CallExpr>(stmt)) {
+        const auto *callee = call->getDirectCallee();
+        item.insert(
+            QStringLiteral("call"),
+            QJsonObject{{QStringLiteral("qualifiedName"),
+                         callee ? QString::fromStdString(
+                                      callee->getQualifiedNameAsString())
+                                : QStringLiteral("unresolved indirect call")},
+                        {QStringLiteral("source"), source}});
+      }
       statements.append(item);
     }
     QJsonObject source{{QStringLiteral("file"), sourceFile}};
@@ -250,6 +109,8 @@ QJsonObject serialize(const clang::FunctionDecl *function,
       source.insert(QStringLiteral("endLine"), lastLine);
     }
     QJsonObject item{{QStringLiteral("id"), int(block->getBlockID())},
+                     {QStringLiteral("entry"), block == &cfg.getEntry()},
+                     {QStringLiteral("exit"), block == &cfg.getExit()},
                      {QStringLiteral("source"), source},
                      {QStringLiteral("statements"), statements},
                      {QStringLiteral("explicitReturn"), returns},
@@ -360,13 +221,30 @@ QJsonObject serialize(const clang::FunctionDecl *function,
       {QStringLiteral("edges"), edges},
       {QStringLiteral("experimentalFacts"),
        QJsonObject{
-           {QStringLiteral("enumAssignments"),
-            QStringLiteral("explicit values only; prior state unknown")},
-           {QStringLiteral("pointerReferenceTypeObservations"),
+           {QStringLiteral("schemaVersion"), 1},
+           {QStringLiteral("scope"), QStringLiteral("selected-function")},
+           {QStringLiteral("identityPolicy"),
+            QStringLiteral("declaration/node identities are local to this "
+                           "result, not cross-revision IDs")},
+           {QStringLiteral("cfgCoverage"),
             QStringLiteral(
-                "compiler type shape only; owner/borrow roles unknown")},
+                "exception paths, implicit destructors and unreachable "
+                "successors omitted; coroutines rejected")},
+           {QStringLiteral("function"), functionJson},
+           {QStringLiteral("clangVersion"),
+            QString::fromStdString(clang::getClangFullVersion())},
+           {QStringLiteral("coverage"),
+            QStringLiteral("experimental current-source intraprocedural "
+                           "observations; not Git-revision facts")},
+           {QStringLiteral("enumAssignments"),
+            QStringLiteral(
+                "explicit enum/member writes; immediate equality guards only")},
+           {QStringLiteral("pointerReferenceTypeObservations"),
+            QStringLiteral("compiler-derived roles and observed bindings; "
+                           "lifetimes not analyzed")},
            {QStringLiteral("localDefUseSlices"),
-            QStringLiteral("not implemented; no slice emitted")},
+            QStringLiteral("experimental intraprocedural may-def-use; unknown "
+                           "influences retained")},
            {QStringLiteral("facts"), facts}}}};
 }
 
@@ -423,7 +301,9 @@ public:
     }
     const auto *body = llvm::dyn_cast<clang::CompoundStmt>(function->getBody());
     const auto *finalReturn =
-        body ? llvm::dyn_cast<clang::ReturnStmt>(body->body_back()) : nullptr;
+        body && !body->body_empty()
+            ? llvm::dyn_cast<clang::ReturnStmt>(body->body_back())
+            : nullptr;
 
     clang::CFG::BuildOptions options;
     options.AddEHEdges = false;
@@ -441,7 +321,7 @@ public:
                      .arg(kMaxBlocks);
       return;
     }
-    const QJsonObject facts = experimentalFacts(function, context);
+    const QJsonObject facts = experimentalFacts(function, context, *cfg);
     *m_json = QJsonDocument(serialize(function, finalReturn, context, *cfg,
                                       m_file, facts))
                   .toJson(QJsonDocument::Compact);

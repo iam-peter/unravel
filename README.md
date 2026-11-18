@@ -155,12 +155,26 @@ D = log2(1 + distinct incoming/outgoing symbol neighbours)
 priority = C * (1 + H) * (1 + 0.25 * D)
 ```
 
-This is **heuristic v1, not a defect probability**. History is explicitly a
-file-level proxy, not historical function churn. Static priority omits H;
+This is **heuristic v1, not a defect probability**. History defaults to a
+file-level proxy, not historical function churn. **Estimate function hunks**
+opts into bounded first-parent historical diff attribution to current function
+extents. Estimates retain commit evidence and explicitly mark replacement,
+overlap and rename ambiguity; they do not prove historical symbol continuity.
+Their first-parent/non-merge coverage differs from the default all-reachable
+file history. Mining is cancellable, not cached, and errors at its work limits
+instead of substituting file counts. Static priority omits H;
 the summary identifies when no history is used. Contributor counts do not
 multiply the score. Existing findings and severity remain in **Findings**.
 Metrics adds function priority and maximum function priority per file; Treemap
 adds priority coloring. Their scope labels and CSV metadata retain the policy.
+
+Merge commits and post-revision edits only map positions; they do not add
+touching commits. Hunk mode requires a fresh index and tracked source files.
+Metadata discovery is capped at one million first-parent commits; expensive
+diffs cover only the required mapping span, capped at 10,000 commits. Mapping
+is capped at two million work operations and expanded changed lines. Metadata
+discovery, each Git command, and mapping have 120-second deadlines; command
+output is capped at 128 MiB. An empty history window avoids historical diffs.
 
 ### Architecture contracts and header impact
 
@@ -222,16 +236,45 @@ and successor edges from a compilation database, never an invented CFG from
 the call graph. Select a function definition in a listed translation unit;
 the selector uses its exact definition start line. Missing helper/database,
 unsupported selection, timeouts, and limits produce explanations.
-The source-linked block/successor diagram is limited to 150 blocks and 400
+The source-linked block/successor diagram is limited to 150 nodes and 400
 edges; larger results retain their block evidence without a truncated diagram.
+Collapse straight-line regions without losing their constituent block IDs or
+statements. **Block evidence** lists actual calls with navigable source sites.
 
 Exception paths, implicit destructor edges, unreachable successors, and
 coroutines are not modeled; header-only definitions outside a listed
-translation unit are unsupported. Experimental facts expose explicit enum
-assignments with **unknown prior state**, and compiler-derived pointer/reference
-type shapes with **unknown ownership/lifetime**. They are not validated state
-machines or ownership graphs. Local data-flow slicing is deliberately a
-**no-go** until aliasing, call effects, and branch-join rules are validated.
+translation unit are unsupported.
+
+**Experimental facts** offers three independently evidence-limited graphs,
+with complete source-linked lists and copyable JSON:
+
+- **State graph:** enum local/member writes, selected by storage identity.
+  Only an immediately guarding equality can constrain the prior state.
+  Intervening statements and nonconstant targets remain unknown. Compiler-resolved
+  `QState::addTransition` and `QAbstractTransition::setTargetState` show explicit
+  registrations, not execution. No allowed-transition contract is assumed and
+  no invalid-transition findings are emitted.
+- **Ownership graph:** value containment, standard/Qt smart-pointer roles,
+  references, raw pointers and explicit QObject constructor parents/reparenting.
+  Shared copies and observers point to one allocation/value-site identity.
+  Raw pointers alone do not prove ownership; unresolved transfers stay unknown.
+  Bindings are flow-insensitive observations, not simultaneous live owners or
+  proof of safe lifetimes, object uniqueness at runtime, or ownership cycles.
+- **Local data-flow slices:** select a definition/use and backward or forward
+  traversal. CFG-based may-reaching definitions preserve shadowed locals,
+  kill prior definitions on assignment, and union definitions at branch joins.
+  Calls clobber address-escaped/reference arguments conservatively; aliases,
+  macros, indirect effects and unsupported expressions remain unknown.
+  These are intraprocedural data dependencies, not control dependencies,
+  interprocedural provenance, or validation/sanitization proofs.
+
+All three remain experimental, not promoted general-purpose analyzers.
+Exported declaration/node identities are local to one result, not persistent
+cross-revision symbols. CFG exclusions also apply to local slices.
+Local analysis is capped at 2,000 transfer events/variables, 4,000 graph nodes,
+10,000 edges and explicit work budgets; exceeding a limit emits an explanation,
+not a partial slice disguised as complete. Interactive slices stop at 1,000
+nodes with a truncation flag; diagrams stop at 150 nodes/400 edges.
 
 ## What the review looks for
 
@@ -292,12 +335,16 @@ ctest --test-dir build --output-on-failure
 
 The CFG helper is OFF by default and does not add Clang C++ linkage to the
 normal application/core. To build it, install matching LLVM/Clang development
-libraries (including libclang-cpp), then configure with
+libraries (libclang-cpp or exported/static Clang components), then configure with
 `-DUNRAVEL_ENABLE_FLOW=ON -DUNRAVEL_LLVM_ROOT=/path/to/llvm`.
 The helper was validated with LLVM 18; its C++ API is version-coupled.
-Its QtCore, libclang, libclang-cpp, LLVM, and builtin-header runtime dependencies
-must remain available. Relocatable optional-helper packaging has not been
-validated; default release packaging is unchanged.
+`cmake --install` puts it beside the application (inside the bundle on macOS),
+with LLVM runtime libraries and builtin headers. Qt and system compiler/standard
+library dependencies must remain available, or be deployed with the usual Qt
+packaging tools. Linux install/relocation is smoke-tested; the optional-helper
+workflow adds Windows/macOS build, test and deployment coverage. Those platform
+runs are not certified by Linux-only validation. Default nightly packages
+remain unchanged and do not enable the helper.
 
 `samples/warehouse` is a small program with known flaws (layers that depend on each other, a helper
 written three times, a base without a virtual destructor, global state, dead code) to try it on.
@@ -326,6 +373,7 @@ Run the second command again to update it.
 ./build/bin/unravel-cli path/to/project --focus review-focus.md --focus-json focus.json
 ./build/bin/unravel-cli path/to/project --revision main --history-days 90 --follow-renames --focus-json -
 ./build/bin/unravel-cli path/to/project --static-focus --focus-json static-focus.json
+./build/bin/unravel-cli path/to/project --focus-hunks --focus-json function-estimates.json
 ./build/bin/unravel-cli path/to/project --architecture .unravel/architecture.json --architecture-json rules.json --fail-on-architecture
 ./build/bin/unravel-cli path/to/project --include-impact headers.json
 ```
@@ -340,6 +388,34 @@ fails explicitly if Git is unavailable; opt into `--static-focus` instead.
 `unravel --view changes --commits a1b2c3d,worktree project` opens on the code those commits changed;
 `--fold vendor,src/generated` folds folders on start. `UNRAVEL_PAN_BENCH=1` pans the visible graph and
 prints the time per frame.
+
+### Reproducing the review benchmark
+
+The opt-in benchmark indexes real C++ sources with two workers, generates
+repeatable Git history, verifies cold/warm cache parity, measures project and
+touched-scope top-20 p95, and cancels an active Git rename-follow query.
+It exits 3 when the 200 ms ranking or 1 s cancellation target is missed.
+
+```bash
+cmake -S . -B build -DUNRAVEL_BUILD_BENCHMARKS=ON
+cmake --build build --target bench_review -j 2
+build/bin/bench_review /tmp/unravel-large --generate --functions 100000 \
+  --runs 50 --save-index /tmp/unravel-large.idx --output /tmp/large.json
+build/bin/bench_review /tmp/unravel-large --synthetic \
+  --load-index /tmp/unravel-large.idx --runs 50
+build/bin/bench_review . --runs 50 --output /tmp/unravel-self.json
+```
+
+Generation requires an empty destination; sources/history are left there for
+inspection. Explicit index reuse assumes unchanged sources. History caches are
+temporary, and normal project sources/settings are not modified.
+`UNRAVEL_PAN_BENCH=files-paired build/bin/unravel /tmp/unravel-large --view architecture`
+alternates three baseline/violation-color pairs in the same process, using
+identical geometry, 30 warmup frames and 240 measured frames per phase. It prints
+JSON and exits 3 above 10% mean overhead. This exercises the overlay rendering
+path, not contract-mining time; frame-swapped wall intervals include display
+scheduling. Keep renderer, viewport and system load fixed.
+Measurements and scope are recorded in [the roadmap](docs/feature-roadmap.md).
 
 ## How it is made
 

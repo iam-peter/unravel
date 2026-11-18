@@ -14,6 +14,7 @@ ColumnLayout {
         changedOnly: scope.currentIndex !== 0
         impactDepth: scope.currentIndex === 2 ? depth.value : 0
         historical: history.checked
+        functionHistory: history.checked && functionHunks.checked
         showAll: all.checked
     }
     Pane {
@@ -29,7 +30,8 @@ ColumnLayout {
                 styles: [Styles.FieldStyle.small]
             }
             SpinBox { id: depth; visible: scope.currentIndex === 2; from: 1; to: 6; value: 1; implicitWidth: 100 }
-            CheckBox { id: history; text: qsTr("Use file history"); checked: true }
+            CheckBox { id: history; text: qsTr("Use Git history"); checked: true }
+            CheckBox { id: functionHunks; text: qsTr("Estimate function hunks"); enabled: history.checked }
             CheckBox { id: all; text: qsTr("Show all (default: top 20)") }
             Button {
                 text: qsTr("Copy Markdown")

@@ -2,6 +2,8 @@
 #include <QDir>
 #include <QMouseEvent>
 #include <QElapsedTimer>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QQuickItem>
 #include <QGuiApplication>
 #include <QIcon>
@@ -12,11 +14,13 @@
 #include <QTimer>
 
 #include <memory>
+#include <algorithm>
 #include <QtQml/qqmlextensionplugin.h>
 
 #include "Fonts.h"
 #include "changes.h"
 #include "session.h"
+#include "views.h"
 
 Q_IMPORT_QML_PLUGIN(IgittStylePlugin)
 
@@ -141,9 +145,12 @@ int main(int argc, char *argv[])
     if (!parser.positionalArguments().isEmpty())
         session->open(QDir::current().absoluteFilePath(parser.positionalArguments().first()));
 
-    // UNRAVEL_PAN_BENCH=1: once indexed, pan the visible graph for 240 frames
-    // and print the mean time per frame, for measuring the edge rendering
+    // Paired files-baseline/files-overlay runs use identical geometry.
     if (qEnvironmentVariableIsSet("UNRAVEL_PAN_BENCH")) {
+        QTimer::singleShot(180000, &app, [] {
+            qCritical("Pan benchmark timed out before collecting 240 frames.");
+            QCoreApplication::exit(2);
+        });
         QObject::connect(session, &Session::stateChanged, &app, [&engine, session] {
             if (session->state() != Session::Ready)
                 return;
@@ -153,31 +160,112 @@ int main(int argc, char *argv[])
                 if (!window)
                     return;
                 // The visible edge layer, through the visual tree
-                QQuickItem *layer = nullptr;
+                EdgeLayer *layer = nullptr;
                 QList<QQuickItem *> todo = {window->contentItem()};
                 while (!todo.isEmpty() && !layer) {
                     QQuickItem *item = todo.takeFirst();
-                    if (QByteArray(item->metaObject()->className()) == "EdgeLayer" && item->isVisible())
-                        layer = item;
+                    if (item->isVisible())
+                        layer = qobject_cast<EdgeLayer *>(item);
                     todo += item->childItems();
                 }
-                if (!layer)
+                if (!layer || !layer->scene()) {
+                    qCritical("Pan benchmark requires a visible graph edge layer.");
+                    QCoreApplication::exit(2);
                     return;
-                auto frames = std::make_shared<int>(0);
+                }
+                const auto mode = qEnvironmentVariable("UNRAVEL_PAN_BENCH");
+                const bool paired = mode == QLatin1String("files-baseline") ||
+                                    mode == QLatin1String("files-overlay") ||
+                                    mode == QLatin1String("files-paired");
+                if (paired) {
+                    auto *dependencies = qobject_cast<DependencyScene *>(layer->scene());
+                    if (!dependencies) {
+                        qCritical("Paired pan benchmark requires --view architecture.");
+                        QCoreApplication::exit(2);
+                        return;
+                    }
+                    dependencies->setLevel(1);
+                }
+                QTimer::singleShot(1000, layer, [layer, window, mode, paired] {
+                if (!layer->scene() || layer->scene()->edgeCount() == 0) {
+                    qCritical("Pan benchmark graph has no edges.");
+                    QCoreApplication::exit(2);
+                    return;
+                }
+                if (paired) {
+                    for (auto &edge : layer->scene()->edges())
+                        edge.forbidden = mode == QLatin1String("files-overlay");
+                    emit layer->scene()->pathsChanged();
+                }
+                auto frames = std::make_shared<int>(-30);
+                auto phase = std::make_shared<int>(0);
+                auto means = std::make_shared<QVector<double>>();
                 auto timer = std::make_shared<QElapsedTimer>();
+                auto intervals = std::make_shared<QVector<double>>();
+                auto previous = std::make_shared<qint64>(0);
                 const double x0 = layer->property("panX").toDouble();
+                const double zoom0 = layer->zoom();
                 timer->start();
-                QObject::connect(window, &QQuickWindow::frameSwapped, layer, [layer, frames, timer, x0] {
+                QObject::connect(window, &QQuickWindow::frameSwapped, layer,
+                                 [layer, frames, phase, means, timer, intervals, previous, mode, x0, zoom0] {
+                    if (*frames < 0) {
+                        ++*frames;
+                        if (*frames == 0) {
+                            timer->restart();
+                            *previous = 0;
+                        }
+                        layer->setPanX(x0 + *frames * 3);
+                        return;
+                    }
+                    const qint64 now = timer->nsecsElapsed();
+                    intervals->append((now - *previous) / 1000000.0);
+                    *previous = now;
+                    ++*frames;
                     if (*frames == 240) {
-                        fprintf(stderr, "pan: %.2f ms per frame\n", timer->elapsed() / 240.0);
+                        const bool multiple = mode == QLatin1String("files-paired");
+                        const double mean = now / 240000000.0;
+                        means->append(mean);
+                        std::sort(intervals->begin(), intervals->end());
+                        const QJsonObject report{
+                            {"benchmark", "pan"}, {"mode", multiple
+                                ? (*phase % 2 ? QStringLiteral("files-overlay") : QStringLiteral("files-baseline")) : mode},
+                            {"phase", *phase}, {"frames", 240},
+                            {"meanMs", mean}, {"p95Ms", intervals->at(227)},
+                            {"nodes", layer->scene()->nodes().size()},
+                            {"edges", layer->scene()->edgeCount()},
+                            {"policy", "240 frame-swapped wall intervals; includes display scheduling, not GPU-only time"}};
+                        const auto json = QJsonDocument(report).toJson(QJsonDocument::Compact);
+                        fprintf(stdout, "%s\n", json.constData());
+                        if (multiple && ++*phase < 6) {
+                            for (auto &edge : layer->scene()->edges())
+                                edge.forbidden = *phase % 2;
+                            emit layer->scene()->pathsChanged();
+                            *frames = -30;
+                            intervals->clear();
+                            layer->setZoom(zoom0);
+                            layer->setPanX(x0 - 90);
+                            return;
+                        }
+                        if (multiple) {
+                            const double baseline = ((*means)[0] + (*means)[2] + (*means)[4]) / 3;
+                            const double overlay = ((*means)[1] + (*means)[3] + (*means)[5]) / 3;
+                            const double increase = 100 * (overlay / baseline - 1);
+                            const auto summary = QJsonDocument(QJsonObject{
+                                {"benchmark", "pan-paired-summary"}, {"baselineMeanMs", baseline},
+                                {"overlayMeanMs", overlay}, {"increasePercent", increase},
+                                {"targetPass", increase <= 10}}).toJson(QJsonDocument::Compact);
+                            fprintf(stdout, "%s\n", summary.constData());
+                            QCoreApplication::exit(increase <= 10 ? 0 : 3);
+                            return;
+                        }
                         QCoreApplication::exit(0);
                         return;
                     }
-                    ++*frames;
                     layer->setProperty("panX", x0 + *frames * 3);
                     layer->setProperty("zoom", layer->property("zoom").toDouble() * 1.0005);
                 }, Qt::QueuedConnection);
                 layer->setProperty("panX", x0 + 1);
+                });
             });
         });
     }

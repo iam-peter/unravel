@@ -2,6 +2,7 @@
 #include <QDir>
 #include <QFile>
 #include <QJsonDocument>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QProcess>
 #include <QSettings>
@@ -21,6 +22,62 @@ class TestHotspots : public QObject
     Q_OBJECT
 
 private slots:
+    void compactCfgPreservesBranchesCallsAndCycles()
+    {
+        const QVariantMap source{{QStringLiteral("file"), QStringLiteral("fixture.cpp")},
+                                 {QStringLiteral("line"), 2}};
+        const QVariantMap call{{QStringLiteral("call"), QVariantMap{
+            {QStringLiteral("qualifiedName"), QStringLiteral("callee")},
+            {QStringLiteral("source"), source}}}};
+        QVariantList blocks;
+        for (int i = 0; i < 6; ++i)
+            blocks.append(QVariantMap{{QStringLiteral("id"), i},
+                {QStringLiteral("source"), source},
+                {QStringLiteral("statements"), QVariantList{call}}});
+        auto entry = blocks[0].toMap();
+        entry[QStringLiteral("entry")] = true;
+        blocks[0] = entry;
+        auto branch = blocks[3].toMap();
+        branch[QStringLiteral("terminatorKind")] = QStringLiteral("IfStmt");
+        blocks[3] = branch;
+        QVariantList edges;
+        auto link = [&](int from, int to, const QString &kind = QStringLiteral("flow")) {
+            edges.append(QVariantMap{{QStringLiteral("from"), from},
+                {QStringLiteral("to"), to}, {QStringLiteral("kind"), kind}});
+        };
+        link(0, 1); link(1, 2); link(2, 3);
+        link(3, 4, QStringLiteral("branch"));
+        link(3, 5, QStringLiteral("branch"));
+        const auto compact = ControlFlow::compactGraph(blocks, edges);
+        QVERIFY(!compact.contains(QStringLiteral("error")));
+        const auto regions = compact.value(QStringLiteral("blocks")).toList();
+        QCOMPARE(regions.size(), 4);
+        bool merged = false;
+        QSet<int> retained;
+        for (const auto &value : regions) {
+            const auto region = value.toMap();
+            const auto ids = region.value(QStringLiteral("blockIds")).toList();
+            for (const auto &id : ids)
+                retained.insert(id.toInt());
+            if (ids.size() == 3) {
+                merged = true;
+                QCOMPARE(ids, (QVariantList{1, 2, 3}));
+                QCOMPARE(region.value(QStringLiteral("statements")).toList().size(), 3);
+                QCOMPARE(region.value(QStringLiteral("terminatorKind")).toString(), QStringLiteral("IfStmt"));
+                QCOMPARE(region.value(QStringLiteral("index")).toInt(), 1);
+            }
+        }
+        QVERIFY(merged);
+        QCOMPARE(retained.size(), 6);
+        QCOMPARE(compact.value(QStringLiteral("edges")).toList().size(), 3);
+        edges.clear();
+        link(1, 2); link(2, 1);
+        const auto cycle = ControlFlow::compactGraph(blocks.mid(1, 2), edges);
+        QCOMPARE(cycle.value(QStringLiteral("edges")).toList().size(), 1);
+        QVERIFY(!ControlFlow::compactGraph(blocks.mid(1, 1), edges)
+                     .value(QStringLiteral("error")).toString().isEmpty());
+    }
+
     void historyViews()
     {
         QTemporaryDir storage, repo, outside;
@@ -56,7 +113,17 @@ private slots:
         write(repo.filePath(QStringLiteral("a.cpp")), "int helper() { return 42; } int answer() { return helper(); }\n");
         git({QStringLiteral("add"), QStringLiteral("a.cpp")});
         git({QStringLiteral("commit"), QStringLiteral("-qm"), QStringLiteral("initial")});
+        write(repo.filePath(QStringLiteral("compile_commands.json")),
+            QJsonDocument(QJsonArray{QJsonObject{
+                {QStringLiteral("directory"), repo.path()},
+                {QStringLiteral("file"), repo.filePath(QStringLiteral("a.cpp"))},
+                {QStringLiteral("arguments"), QJsonArray{"clang++", "-std=c++20", "-c", "a.cpp"}}},
+                QJsonObject{
+                {QStringLiteral("directory"), repo.path()},
+                {QStringLiteral("file"), repo.filePath(QStringLiteral("new.cpp"))},
+                {QStringLiteral("arguments"), QJsonArray{"clang++", "-std=c++20", "-c", "new.cpp"}}}}).toJson());
         write(repo.filePath(QStringLiteral("new.cpp")), "int uncommitted() { return 0; }\n");
+        git({QStringLiteral("add"), QStringLiteral("new.cpp")});
         write(outside.filePath(QStringLiteral("other.cpp")), "int other() { return 1; }\n");
 
         Session session(nullptr);
@@ -82,6 +149,20 @@ private slots:
         const int answer = session.symbolByName(QStringLiteral("answer"));
         const int helper = session.symbolByName(QStringLiteral("helper"));
         QVERIFY(answer >= 0 && helper >= 0);
+        focus.setFunctionHistory(true);
+        QTRY_VERIFY_WITH_TIMEOUT(!focus.busy(), 10000);
+        QVERIFY2(focus.summary().contains(QStringLiteral("first-parent non-merge function-hunk estimate")),
+                 qPrintable(focus.summary()));
+        QVERIFY(focus.summary().contains(QStringLiteral("post-revision/current-tree changes are mapping-only")));
+        const QJsonObject functionReport = QJsonDocument::fromJson(focus.json().toUtf8()).object();
+        QCOMPARE(functionReport.value(QStringLiteral("mode")).toString(),
+                 QStringLiteral("historical-function-hunk-estimate"));
+        QVERIFY(functionReport.value(QStringLiteral("historySemantics")).toString()
+                    .contains(QStringLiteral("merge commits are not counted")));
+        QVERIFY(functionReport.value(QStringLiteral("postRevisionChangedFiles")).toInt() > 0);
+        focus.setFunctionHistory(false);
+        QTRY_VERIFY_WITH_TIMEOUT(!focus.busy(), 10000);
+
         const auto definition = session.model()->symbols[answer].def;
         hotspots.loadBlame(definition.file, definition.line);
         QTRY_VERIFY_WITH_TIMEOUT(!hotspots.blameBusy(), 10000);
@@ -93,6 +174,7 @@ private slots:
         QVERIFY(nestedBlame.text.contains(QStringLiteral("initial")));
         QCOMPARE(Unravel::History::blame(repo.path(), repo.filePath(QStringLiteral("a.cpp")), 0).text, QString());
         QVERIFY(!Unravel::History::blame(repo.path(), repo.filePath(QStringLiteral("a.cpp")), 0).error.isEmpty());
+
         flow.analyze(definition.file, definition.line, QStringLiteral("answer"));
         if (flow.available()) {
             QVERIFY(flow.busy());
@@ -100,6 +182,23 @@ private slots:
             QVERIFY(!flow.busy());
             QCoreApplication::processEvents();
             QVERIFY(flow.blocks().isEmpty());
+            flow.analyze(definition.file, definition.line, QStringLiteral("answer"));
+            QTRY_VERIFY_WITH_TIMEOUT(!flow.busy(), 10000);
+            QVERIFY2(flow.error().isEmpty(), qPrintable(flow.error()));
+            QVERIFY(!flow.diagram().value(QStringLiteral("nodes")).toList().isEmpty());
+            const auto local = flow.experimentalFacts().value(QStringLiteral("facts")).toMap()
+                                   .value(QStringLiteral("localDefUseSlices")).toMap();
+            const auto nodes = local.value(QStringLiteral("nodes")).toList();
+            QVERIFY(!nodes.isEmpty());
+            const auto seed = nodes.first().toMap().value(QStringLiteral("id")).toString();
+            const auto backward = flow.slice(seed, false);
+            QVERIFY(backward.value(QStringLiteral("error")).toString().isEmpty());
+            QVERIFY(!backward.value(QStringLiteral("nodes")).toList().isEmpty());
+            QVERIFY(!flow.slice(QStringLiteral("missing"), false)
+                         .value(QStringLiteral("error")).toString().isEmpty());
+            QVERIFY(!flow.evidenceDiagram(backward.value(QStringLiteral("nodes")).toList(),
+                                          backward.value(QStringLiteral("edges")).toList())
+                         .contains(QStringLiteral("error")));
         } else {
             QVERIFY(!flow.busy());
             QVERIFY(!flow.error().isEmpty());
@@ -147,6 +246,25 @@ private slots:
         }
         QVERIFY(foundFile);
 
+        focus.setHistorical(true);
+        QTRY_VERIFY_WITH_TIMEOUT(!focus.busy(), 10000);
+        QTest::qWait(20);
+        write(repo.filePath(QStringLiteral("a.cpp")), "int helper() { return 43; } int answer() { return helper(); }\n");
+        focus.setFunctionHistory(true);
+        session.open(repo.path());
+        QTRY_VERIFY_WITH_TIMEOUT(session.stale(), 15000);
+        QTRY_VERIFY_WITH_TIMEOUT(!focus.busy(), 15000);
+        QVERIFY(focus.summary().contains(QStringLiteral("Function-hunk estimate unavailable")));
+        QVERIFY(focus.summary().contains(QStringLiteral("current index")));
+        const QJsonObject staleFunctionReport = QJsonDocument::fromJson(focus.json().toUtf8()).object();
+        QCOMPARE(staleFunctionReport.value(QStringLiteral("mode")).toString(),
+                 QStringLiteral("historical-function-hunk-estimate"));
+        QVERIFY(!staleFunctionReport.value(QStringLiteral("error")).toString().isEmpty());
+
+        focus.setFunctionHistory(false);
+        QTRY_VERIFY_WITH_TIMEOUT(!focus.busy(), 10000);
+        QVERIFY(focus.summary().contains(QStringLiteral("file-history proxy over all reachable non-merge commits")));
+
         hotspots.refresh();
         hotspots.cancel();
         QVERIFY(!hotspots.ready());
@@ -156,10 +274,12 @@ private slots:
         QCoreApplication::processEvents();
         QVERIFY(!hotspots.ready());
 
+        const int indexedRevision = session.revision();
         hotspots.setDays(30);
         QTRY_VERIFY_WITH_TIMEOUT(!hotspots.busy(), 10000);
         QVERIFY(hotspots.ready());
         QCOMPARE(hotspots.days(), 30);
+        QCOMPARE(session.revision(), indexedRevision);
         // A refresh from the first project must not be published in the second.
         hotspots.refresh();
         hotspots.loadBlame(definition.file, definition.line);

@@ -12,6 +12,10 @@ ReviewFocus::ReviewFocus(QObject *parent)
     : QAbstractListModel(parent)
 {
     connect(Session::instance(), &Session::modelChanged, this, &ReviewFocus::reload);
+    connect(Session::instance(), &Session::staleChanged, this, [this] {
+        if (m_functionHistory)
+            reload();
+    });
     connect(Hotspots::instance(), &Hotspots::changed, this, &ReviewFocus::reload);
     connect(Changes::instance(), &Changes::changesChanged, this, &ReviewFocus::reload);
     connect(Changes::instance(), &Changes::busyChanged, this, &ReviewFocus::reload);
@@ -38,6 +42,15 @@ void ReviewFocus::setHistorical(bool value)
     if (m_historical == value)
         return;
     m_historical = value;
+    emit optionsChanged();
+    reload();
+}
+
+void ReviewFocus::setFunctionHistory(bool value)
+{
+    if (m_functionHistory == value)
+        return;
+    m_functionHistory = value;
     emit optionsChanged();
     reload();
 }
@@ -73,6 +86,16 @@ void ReviewFocus::reload()
     m_filePriorities.clear();
     m_busy = bool(m_model);
     if (m_model) {
+        if (m_functionHistory && Session::instance()->stale()) {
+            m_result.functionHistory = true;
+            m_result.historical = true;
+            m_result.firstParentHistory = true;
+            m_result.error = tr("Function hunk estimates require a current index; reindex before enabling them");
+            m_busy = false;
+            endResetModel();
+            emit changed();
+            return;
+        }
         Unravel::Focus::Options options;
         options.limit = m_showAll ? 0 : 20;
         options.changedOnly = m_changedOnly;
@@ -87,12 +110,17 @@ void ReviewFocus::reload()
         const auto activity = m_historical && Hotspots::instance()->ready()
             ? Hotspots::instance()->activity() : Unravel::History::Activity();
         const auto model = m_model;
+        const bool functionHistory = m_functionHistory;
         auto *watcher = new QFutureWatcher<Unravel::Focus::Result>(this);
         connect(watcher, &QFutureWatcher<Unravel::Focus::Result>::finished, this, [this, watcher, generation] {
             const auto result = watcher->result();
             watcher->deleteLater();
             if (generation != m_generation)
                 return;
+            if (m_functionHistory && Session::instance()->stale()) {
+                reload();
+                return;
+            }
             beginResetModel();
             m_result = result;
             for (const auto &entry : m_result.entries) {
@@ -104,8 +132,19 @@ void ReviewFocus::reload()
             endResetModel();
             emit changed();
         });
-        watcher->setFuture(QtConcurrent::run([model, activity, options, cancel] {
-            return Unravel::Focus::rank(*model, activity.ready() ? &activity : nullptr, options);
+        watcher->setFuture(QtConcurrent::run([model, activity, options, cancel, functionHistory] {
+            Unravel::History::HunkActivity hunks;
+            auto rankedOptions = options;
+            if (functionHistory) {
+                if (!activity.ready()) {
+                    hunks.error = QStringLiteral("Function hunk estimates require available file history");
+                } else {
+                    hunks = Unravel::History::functionHunks(activity.repository, activity.revision,
+                        activity.since, activity.until, *model, cancel.get());
+                }
+                rankedOptions.functionHunks = &hunks;
+            }
+            return Unravel::Focus::rank(*model, activity.ready() ? &activity : nullptr, rankedOptions);
         }));
         for (const auto &finding : Session::instance()->report().findings) {
             for (qint32 symbol : finding.symbols)
@@ -121,12 +160,26 @@ QString ReviewFocus::summary() const
     if (m_busy)
         return tr("Computing Review Focus...");
     if (!m_result.error.isEmpty())
-        return m_result.error;
+        return m_result.functionHistory
+            ? tr("Function-hunk estimate unavailable: %1").arg(m_result.error) : m_result.error;
+    QString history = m_result.functionHistory
+        ? tr("first-parent non-merge function-hunk estimate; side-branch and merge commits are not counted (file proxy counts all reachable non-merge commits)")
+        : m_result.historical ? (m_result.followedRenames
+            ? tr("file-history proxy over all reachable non-merge commits; Git --follow heuristic")
+            : tr("file-history proxy over all reachable non-merge commits; renames not followed"))
+                             : tr("static priority (no history used)");
+    QString caveats = m_result.partial ? tr(" | partial shallow history") : QString();
+    if (m_result.functionHistory) {
+        caveats += tr(" | %1 first-parent commits used for line mapping").arg(m_result.mappingCommits);
+        caveats += tr(" | post-revision/current-tree changes are mapping-only, not counted as commits");
+        if (m_result.postRevisionChangedFiles > 0)
+            caveats += tr(" (%1 files)").arg(m_result.postRevisionChangedFiles);
+    } else if (m_result.historical) {
+        caveats += tr(" | working-tree changes not counted");
+    }
     return tr("%1 of %2 functions | %3 | heuristic v1, not a defect probability%4")
         .arg(count()).arg(m_result.eligible)
-        .arg(m_result.historical ? (m_result.followedRenames ? tr("file-history proxy; Git --follow heuristic")
-                                                          : tr("file-history proxy; renames not followed")) : tr("static priority (no history used)"),
-             m_result.partial ? tr(" | partial shallow history") : QString());
+        .arg(history, caveats);
 }
 
 QHash<int, QByteArray> ReviewFocus::roleNames() const
@@ -152,7 +205,11 @@ QVariant ReviewFocus::data(const QModelIndex &index, int role) const
             .arg(m_model->locationText(symbol.def)).arg(symbol.metrics.complexity).arg(symbol.metrics.cognitive)
             .arg(entry.neighbours).arg(entry.complexity, 0, 'f', 2).arg(entry.history, 0, 'f', 2)
             .arg(entry.dependency, 0, 'f', 2)
-            .arg(m_result.historical ? tr(" | %1 file commits (proxy)").arg(entry.commits) : QString());
+            .arg(m_result.functionHistory
+                ? tr(" | %1 hunk commits, %2 mapped lines, %3 ambiguous commits%4")
+                    .arg(entry.hunkCommits).arg(entry.hunkLines).arg(entry.ambiguousHunks)
+                    .arg(entry.hunkAmbiguity.isEmpty() ? QString() : tr(" (%1)").arg(entry.hunkAmbiguity.join(QStringLiteral(", "))))
+                : m_result.historical ? tr(" | %1 file commits (proxy)").arg(entry.commits) : QString());
     }
     return {};
 }

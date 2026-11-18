@@ -597,6 +597,322 @@ private slots:
         QVERIFY(shallow.shallow);
     }
 
+    void functionHunkHistory()
+    {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        qint64 time = 1700000000;
+        QByteArray output;
+        auto git = [&](const QStringList &args) {
+            QProcess process;
+            process.setWorkingDirectory(dir.path());
+            auto env = QProcessEnvironment::systemEnvironment();
+            env.insert(QStringLiteral("GIT_AUTHOR_DATE"), QStringLiteral("@%1 +0000").arg(time));
+            env.insert(QStringLiteral("GIT_COMMITTER_DATE"), QStringLiteral("@%1 +0000").arg(time));
+            env.insert(QStringLiteral("GIT_AUTHOR_NAME"), QStringLiteral("Test"));
+            env.insert(QStringLiteral("GIT_AUTHOR_EMAIL"), QStringLiteral("test@example.test"));
+            process.setProcessEnvironment(env);
+            process.start(QStringLiteral("git"), QStringList{
+                QStringLiteral("-c"), QStringLiteral("user.name=Test"),
+                QStringLiteral("-c"), QStringLiteral("user.email=test@example.test"),
+                QStringLiteral("-c"), QStringLiteral("commit.gpgsign=false")} + args);
+            QVERIFY(process.waitForFinished(10000));
+            const QByteArray error = process.readAllStandardError();
+            QVERIFY2(process.exitCode() == 0, error.constData());
+            output = process.readAllStandardOutput().trimmed();
+        };
+        auto write = [&](const QString &path, const QByteArray &contents) {
+            QFile file(dir.filePath(path));
+            QVERIFY(file.open(QIODevice::WriteOnly));
+            QCOMPARE(file.write(contents), contents.size());
+        };
+        auto commit = [&](const QString &message) {
+            git({QStringLiteral("add"), QStringLiteral("-A")});
+            git({QStringLiteral("commit"), QStringLiteral("-qm"), message});
+        };
+        git({QStringLiteral("init"), QStringLiteral("-qb"), QStringLiteral("main")});
+        write(QStringLiteral("a.cpp"),
+              "void alpha() {\n int value = 0;\n return;\n}\n"
+              "void beta() {\n return;\n}\n");
+        commit(QStringLiteral("base"));
+        git({QStringLiteral("rev-parse"), QStringLiteral("HEAD")});
+        const QString base = QString::fromUtf8(output);
+        time += 1000;
+        const qint64 since = time;
+        write(QStringLiteral("a.cpp"),
+              "void alpha() {\n int value = 1;\n return;\n}\n"
+              "void beta() {\n return /* touched */;\n}\n");
+        commit(QStringLiteral("change two functions"));
+        git({QStringLiteral("rev-parse"), QStringLiteral("HEAD")});
+        const QString changed = QString::fromUtf8(output);
+        time += 1000;
+        git({QStringLiteral("mv"), QStringLiteral("a.cpp"), QStringLiteral("b.cpp")});
+        write(QStringLiteral("b.cpp"),
+              "// shifted one\n// shifted two\n"
+              "void alpha() {\n int value = 2;\n return;\n}\n"
+              "void beta() {\n return /* touched */;\n}\n");
+        commit(QStringLiteral("replace, shift, and rename"));
+
+        CodeModel model;
+        model.root = dir.path();
+        const int file = model.addFile(dir.filePath(QStringLiteral("b.cpp")));
+        model.files[file].project = true;
+        const int alpha = model.addSymbol(QStringLiteral("alpha"));
+        model.symbols[alpha].kind = SymbolKind::Function;
+        model.symbols[alpha].flags = Defined;
+        model.symbols[alpha].name = model.symbols[alpha].qualified = QStringLiteral("alpha");
+        model.symbols[alpha].def = {file, 3, 1, 6, 1};
+        const int beta = model.addSymbol(QStringLiteral("beta"));
+        model.symbols[beta].kind = SymbolKind::Function;
+        model.symbols[beta].flags = Defined;
+        model.symbols[beta].name = model.symbols[beta].qualified = QStringLiteral("beta");
+        model.symbols[beta].def = {file, 7, 1, 9, 1};
+        model.finalize();
+
+        const History::HunkActivity attributed = History::functionHunks(dir.path(), QStringLiteral("HEAD"), since, since, model);
+        QVERIFY2(attributed.ready(), qPrintable(attributed.error));
+        QVERIFY(attributed.firstParentOnly);
+        QCOMPARE(attributed.mappingCommits, 2);
+        QCOMPARE(attributed.functions.value(alpha).commits, 1);
+        QCOMPARE(attributed.functions.value(beta).commits, 1);
+        QCOMPARE(attributed.functions.value(alpha).lines, 1);
+        QCOMPARE(attributed.functions.value(beta).lines, 1);
+        QVERIFY(attributed.functions.value(alpha).ambiguity.contains(QStringLiteral("replacement")));
+        QVERIFY(attributed.functions.value(alpha).ambiguity.contains(QStringLiteral("rename")));
+        QCOMPARE(attributed.functions.value(alpha).ambiguousCommits, 1);
+        QVERIFY(attributed.functions.value(beta).ambiguity.contains(QStringLiteral("rename")));
+
+        const auto oldRevision = History::functionHunks(dir.path(), changed, since, since, model);
+        QVERIFY2(oldRevision.ready(), qPrintable(oldRevision.error));
+        QCOMPARE(oldRevision.revision, changed);
+        QCOMPARE(oldRevision.functions.value(alpha).commits, 1);
+        QVERIFY(oldRevision.functions.value(alpha).ambiguity.contains(QStringLiteral("replacement")));
+        QVERIFY(oldRevision.postRevisionChangedFiles > 0);
+        QVERIFY(oldRevision.functions.value(alpha).ambiguity.contains(QStringLiteral("post-revision")));
+        const auto beforeChange = History::functionHunks(dir.path(), base, since, since, model);
+        QVERIFY2(beforeChange.ready(), qPrintable(beforeChange.error));
+        QVERIFY(beforeChange.functions.isEmpty());
+        const auto outsideWindow = History::functionHunks(dir.path(), QStringLiteral("HEAD"), since + 1, since + 100, model);
+        QVERIFY2(outsideWindow.ready(), qPrintable(outsideWindow.error));
+        QVERIFY(outsideWindow.functions.isEmpty());
+        QCOMPARE(outsideWindow.mappingCommits, 0);
+
+        Focus::Options options;
+        options.functionHunks = &attributed;
+        const auto focused = Focus::rank(model, nullptr, options);
+        QVERIFY(focused.functionHistory);
+        QCOMPARE(focused.entries.first().hunkCommits, 1);
+        QCOMPARE(focused.entries.first().history, 1.0);
+        const QJsonObject report = Focus::json(model, focused);
+        QCOMPARE(report.value(QStringLiteral("mode")).toString(), QStringLiteral("historical-function-hunk-estimate"));
+        QVERIFY(report.value(QStringLiteral("historySemantics")).toString().contains(QStringLiteral("merge commits are not counted")));
+        QVERIFY(report.value(QStringLiteral("postRevisionPolicy")).toString().contains(QStringLiteral("not counted")));
+        const QJsonObject alphaReport = report.value(QStringLiteral("functions")).toArray().first().toObject();
+        QCOMPARE(alphaReport.value(QStringLiteral("ambiguousHunkCommits")).toInt(), 1);
+        QVERIFY(alphaReport.value(QStringLiteral("historyAttribution")).toString()
+                    .contains(QStringLiteral("merge commits are not counted")));
+        QVERIFY(Focus::markdown(model, focused).contains(QStringLiteral("all reachable non-merge commits")));
+        QVERIFY(Focus::markdown(model, focused).contains(QStringLiteral("merge commits are not counted")));
+
+        write(QStringLiteral("b.cpp"),
+              "// shifted one\n// shifted two\n"
+              "void alpha() {\n int value = 3;\n return;\n}\n"
+              "void beta() {\n return /* touched */;\n}\n");
+        const auto workingTree = History::functionHunks(dir.path(), QStringLiteral("HEAD"), since, since, model);
+        QVERIFY2(workingTree.ready(), qPrintable(workingTree.error));
+        QCOMPARE(workingTree.postRevisionChangedFiles, 1);
+        QCOMPARE(workingTree.functions.value(alpha).commits, 1);
+        QVERIFY(workingTree.functions.value(alpha).ambiguity.contains(QStringLiteral("post-revision")));
+
+        const int overlapping = model.addSymbol(QStringLiteral("overlapping"));
+        model.symbols[overlapping].kind = SymbolKind::Function;
+        model.symbols[overlapping].flags = Defined;
+        model.symbols[overlapping].name = model.symbols[overlapping].qualified = QStringLiteral("overlapping");
+        model.symbols[overlapping].def = {file, 4, 1, 4, 20};
+        model.finalize();
+        const auto overlap = History::functionHunks(dir.path(), QStringLiteral("HEAD"), since, since, model);
+        QVERIFY2(overlap.ready(), qPrintable(overlap.error));
+        QCOMPARE(overlap.functions.value(alpha).commits, 0);
+        QVERIFY(overlap.functions.value(alpha).ambiguity.contains(QStringLiteral("overlap")));
+        QVERIFY(overlap.functions.value(overlapping).ambiguity.contains(QStringLiteral("overlap")));
+
+        write(QStringLiteral("untracked.cpp"), "int untracked() { return 0; }\n");
+        CodeModel untrackedModel;
+        untrackedModel.root = dir.path();
+        const int untrackedFile = untrackedModel.addFile(dir.filePath(QStringLiteral("untracked.cpp")));
+        untrackedModel.files[untrackedFile].project = true;
+        const int untrackedFunction = untrackedModel.addSymbol(QStringLiteral("untracked"));
+        untrackedModel.symbols[untrackedFunction].kind = SymbolKind::Function;
+        untrackedModel.symbols[untrackedFunction].flags = Defined;
+        untrackedModel.symbols[untrackedFunction].name = untrackedModel.symbols[untrackedFunction].qualified =
+            QStringLiteral("untracked");
+        untrackedModel.symbols[untrackedFunction].def = {untrackedFile, 1, 1, 1, 30};
+        untrackedModel.finalize();
+        const auto untracked = History::functionHunks(dir.path(), QStringLiteral("HEAD"), since, since, untrackedModel);
+        QVERIFY(!untracked.ready());
+        QVERIFY(untracked.error.contains(QStringLiteral("untracked")));
+
+        const std::atomic_bool cancelled{true};
+        const auto stopped = History::functionHunks(dir.path(), QStringLiteral("HEAD"), since, since, model, &cancelled);
+        QVERIFY(stopped.cancelled);
+        QVERIFY(!stopped.ready());
+        const auto invalid = History::functionHunks(dir.path(), QStringLiteral("--invalid"), since, since, model);
+        QVERIFY(!invalid.ready());
+        QVERIFY(!invalid.error.isEmpty());
+        QTemporaryDir outside;
+        const auto missing = History::functionHunks(outside.path(), QStringLiteral("HEAD"), since, since, model);
+        QVERIFY(!missing.ready());
+        QVERIFY(!missing.error.isEmpty());
+    }
+
+    void functionHunkMappingWorkBound()
+    {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        qint64 time = 1700000000;
+        QByteArray output;
+        auto git = [&](const QStringList &args) {
+            QProcess process;
+            process.setWorkingDirectory(dir.path());
+            auto env = QProcessEnvironment::systemEnvironment();
+            env.insert(QStringLiteral("GIT_AUTHOR_DATE"), QStringLiteral("@%1 +0000").arg(time));
+            env.insert(QStringLiteral("GIT_COMMITTER_DATE"), QStringLiteral("@%1 +0000").arg(time));
+            env.insert(QStringLiteral("GIT_AUTHOR_NAME"), QStringLiteral("Test"));
+            env.insert(QStringLiteral("GIT_AUTHOR_EMAIL"), QStringLiteral("test@example.test"));
+            process.setProcessEnvironment(env);
+            process.start(QStringLiteral("git"), QStringList{
+                QStringLiteral("-c"), QStringLiteral("user.name=Test"),
+                QStringLiteral("-c"), QStringLiteral("user.email=test@example.test"),
+                QStringLiteral("-c"), QStringLiteral("commit.gpgsign=false")} + args);
+            QVERIFY(process.waitForFinished(10000));
+            const QByteArray error = process.readAllStandardError();
+            QVERIFY2(process.exitCode() == 0, error.constData());
+            output = process.readAllStandardOutput().trimmed();
+        };
+        auto write = [&](const QByteArray &contents) {
+            QFile file(dir.filePath(QStringLiteral("large.cpp")));
+            QVERIFY(file.open(QIODevice::WriteOnly));
+            QCOMPARE(file.write(contents), contents.size());
+        };
+        auto commit = [&](const QString &message) {
+            git({QStringLiteral("add"), QStringLiteral("large.cpp")});
+            git({QStringLiteral("commit"), QStringLiteral("-qm"), message});
+        };
+        git({QStringLiteral("init"), QStringLiteral("-qb"), QStringLiteral("main")});
+        QByteArray base = "void large() {\n";
+        QByteArray changed = base;
+        for (int i = 0; i < 3000; ++i) {
+            base += "int value" + QByteArray::number(i) + " = 0;\n";
+            changed += "int value" + QByteArray::number(i) + " = 1;\n";
+        }
+        base += "}\n";
+        changed += "}\n";
+        write(base);
+        commit(QStringLiteral("base"));
+        time += 1000;
+        const qint64 since = time;
+        write(changed);
+        commit(QStringLiteral("window change"));
+        time += 1000;
+        QByteArray later = "void large() {\n";
+        for (int i = 0; i < 3000; ++i)
+            later += "int value" + QByteArray::number(i) + (i % 2 == 0 ? " = 2;\n" : " = 1;\n");
+        later += "}\n";
+        write(later);
+        commit(QStringLiteral("many separated replacements"));
+
+        CodeModel model;
+        model.root = dir.path();
+        const int file = model.addFile(dir.filePath(QStringLiteral("large.cpp")));
+        model.files[file].project = true;
+        const int function = model.addSymbol(QStringLiteral("large"));
+        model.symbols[function].kind = SymbolKind::Function;
+        model.symbols[function].flags = Defined;
+        model.symbols[function].name = model.symbols[function].qualified = QStringLiteral("large");
+        model.symbols[function].def = {file, 1, 1, 3002, 1};
+        model.finalize();
+
+        const auto result = History::functionHunks(dir.path(), QStringLiteral("HEAD"), since, since, model);
+        QVERIFY(!result.ready());
+        QVERIFY(result.error.contains(QStringLiteral("two million operations")));
+        QVERIFY(result.functions.isEmpty());
+    }
+
+    void functionHunkRecentWindowBoundsTraversal()
+    {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        QProcess init;
+        init.setWorkingDirectory(dir.path());
+        init.start(QStringLiteral("git"), {QStringLiteral("init"), QStringLiteral("-q")});
+        QVERIFY(init.waitForFinished(10000));
+        QCOMPARE(init.exitCode(), 0);
+        QProcess head;
+        head.setWorkingDirectory(dir.path());
+        head.start(QStringLiteral("git"), {QStringLiteral("symbolic-ref"), QStringLiteral("HEAD"),
+                                            QStringLiteral("refs/heads/main")});
+        QVERIFY(head.waitForFinished(10000));
+        QCOMPARE(head.exitCode(), 0);
+
+        QByteArray stream;
+        auto appendCommit = [&](int mark, qint64 timestamp, const QByteArray &message,
+                                const QString &path, const QByteArray &contents) {
+            stream += "commit refs/heads/main\nmark :" + QByteArray::number(mark) + "\ncommitter Test <test@example.test> "
+                + QByteArray::number(timestamp) + " +0000\ndata " + QByteArray::number(message.size()) + "\n"
+                + message + "\n";
+            if (!path.isEmpty())
+                stream += "M 100644 inline " + path.toUtf8() + "\ndata "
+                    + QByteArray::number(contents.size()) + "\n" + contents + "\n";
+            stream += "\n";
+        };
+        appendCommit(1, 1700000000, "base", QStringLiteral("source.cpp"), "int recent() { return 0; }\n");
+        for (int i = 0; i < 10000; ++i) {
+            const QByteArray contents = "noise " + QByteArray::number(i) + "\n";
+            appendCommit(i + 2, 1699990000 - i, "out-of-window", QStringLiteral("noise.txt"), contents);
+        }
+        appendCommit(10002, 1700001000, "window commit", QStringLiteral("source.cpp"), "int recent() { return 1; }\n");
+        appendCommit(10003, 1699970000, "clock-skewed tip", QStringLiteral("noise.txt"), "tip\n");
+
+        QProcess fastImport;
+        fastImport.setWorkingDirectory(dir.path());
+        fastImport.start(QStringLiteral("git"), {QStringLiteral("fast-import"), QStringLiteral("--quiet")});
+        QVERIFY(fastImport.waitForStarted(10000));
+        QCOMPARE(fastImport.write(stream), qint64(stream.size()));
+        fastImport.closeWriteChannel();
+        QVERIFY(fastImport.waitForFinished(60000));
+        const QByteArray importError = fastImport.readAllStandardError();
+        QVERIFY2(fastImport.exitCode() == 0, importError.constData());
+        QProcess checkout;
+        checkout.setWorkingDirectory(dir.path());
+        checkout.start(QStringLiteral("git"), {QStringLiteral("checkout"), QStringLiteral("-f"), QStringLiteral("main")});
+        QVERIFY(checkout.waitForFinished(10000));
+        const QByteArray checkoutError = checkout.readAllStandardError();
+        QVERIFY2(checkout.exitCode() == 0, checkoutError.constData());
+
+        CodeModel model;
+        model.root = dir.path();
+        const int file = model.addFile(dir.filePath(QStringLiteral("source.cpp")));
+        model.files[file].project = true;
+        const int function = model.addSymbol(QStringLiteral("recent"));
+        model.symbols[function].kind = SymbolKind::Function;
+        model.symbols[function].flags = Defined;
+        model.symbols[function].name = model.symbols[function].qualified = QStringLiteral("recent");
+        model.symbols[function].def = {file, 1, 1, 1, 40};
+        model.finalize();
+
+        const auto recent = History::functionHunks(dir.path(), QStringLiteral("HEAD"), 1700001000, 1700001000, model);
+        QVERIFY2(recent.ready(), qPrintable(recent.error));
+        QCOMPARE(recent.mappingCommits, 2);
+        QCOMPARE(recent.functions.value(function).commits, 1);
+        const auto empty = History::functionHunks(dir.path(), QStringLiteral("HEAD"), 1700002000, 1700003000, model);
+        QVERIFY2(empty.ready(), qPrintable(empty.error));
+        QCOMPARE(empty.mappingCommits, 0);
+        QVERIFY(empty.functions.isEmpty());
+        const auto tooWide = History::functionHunks(dir.path(), QStringLiteral("HEAD"), 0, 1700005000, model);
+        QVERIFY(!tooWide.ready());
+        QVERIFY(tooWide.error.contains(QStringLiteral("line-mapping span exceeds 10,000 commits")));
+    }
+
     void qtEventsAndCallEvidence()
     {
         QTemporaryDir dir;
@@ -692,6 +1008,12 @@ private slots:
         for (const auto &entry : result.entries)
             unique.insert(entry.symbol);
         QCOMPARE(unique.size(), 20);
+        Focus::Options allOptions;
+        allOptions.limit = 0;
+        const auto all = Focus::rank(model, nullptr, allOptions);
+        QCOMPARE(all.entries.size(), 25);
+        for (int i = 0; i < result.entries.size(); ++i)
+            QCOMPARE(result.entries[i].symbol, all.entries[i].symbol);
         QCOMPARE(Focus::json(model, result).value(QStringLiteral("functions")).toArray().size(), 20);
         Focus::Options options;
         options.changedOnly = true;
@@ -712,7 +1034,46 @@ private slots:
         QVERIFY(historical.historical);
         QVERIFY(historical.partial);
         QCOMPARE(historical.entries.first().history, 2.0);
-        QVERIFY(Focus::markdown(model, historical).contains(QStringLiteral("file-level pathname history proxy")));
+        QVERIFY(Focus::markdown(model, historical).contains(QStringLiteral("file-level pathname proxy over all reachable non-merge commits")));
+        QVERIFY(Focus::markdown(model, historical).contains(QStringLiteral("all reachable non-merge commits")));
+        QVERIFY(Focus::json(model, historical).value(QStringLiteral("historySemantics")).toString()
+                    .contains(QStringLiteral("all reachable non-merge commits")));
+
+        History::HunkActivity failedHunks;
+        failedHunks.repository = model.root;
+        failedHunks.revision = QStringLiteral("test-revision");
+        failedHunks.error = QStringLiteral("Function hunk history exceeded its configured bound");
+        Focus::Options hunkOptions;
+        hunkOptions.functionHunks = &failedHunks;
+        const auto failedHistory = Focus::rank(model, &history, hunkOptions);
+        QVERIFY(!failedHistory.error.isEmpty());
+        QVERIFY(failedHistory.entries.isEmpty());
+        QCOMPARE(Focus::json(model, failedHistory).value(QStringLiteral("mode")).toString(),
+                 QStringLiteral("historical-function-hunk-estimate"));
+
+        CodeModel outsideModel = model;
+        const int outsideFile = outsideModel.addFile(QDir::rootPath() + QStringLiteral("unravel-outside.cpp"));
+        outsideModel.files[outsideFile].project = true;
+        const int outsideFunction = outsideModel.addSymbol(QStringLiteral("outside"));
+        outsideModel.symbols[outsideFunction].kind = SymbolKind::Function;
+        outsideModel.symbols[outsideFunction].flags = Defined;
+        outsideModel.symbols[outsideFunction].name = outsideModel.symbols[outsideFunction].qualified =
+            QStringLiteral("outside");
+        outsideModel.symbols[outsideFunction].def = {outsideFile, 1, 1, 1, 10};
+        outsideModel.finalize();
+        outsideModel.files[outsideFile].project = true;
+        History::HunkActivity availableHunks;
+        availableHunks.repository = model.root;
+        availableHunks.revision = QStringLiteral("test-revision");
+        Focus::Options outsideOptions;
+        outsideOptions.functionHunks = &availableHunks;
+        const auto outsideResult = Focus::rank(outsideModel, nullptr, outsideOptions);
+        QVERIFY2(outsideResult.error.contains(QStringLiteral("outside the history repository")),
+                 qPrintable(QStringLiteral("error='%1' entries=%2 eligible=%3 repo='%4' path='%5' relative='%6'")
+                     .arg(outsideResult.error).arg(outsideResult.entries.size()).arg(outsideResult.eligible)
+                     .arg(availableHunks.repository, outsideModel.files[outsideFile].path,
+                          QDir(availableHunks.repository).relativeFilePath(outsideModel.files[outsideFile].path))));
+        QVERIFY(outsideResult.entries.isEmpty());
     }
 
     void cleanArguments()

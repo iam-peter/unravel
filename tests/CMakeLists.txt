@@ -2,6 +2,14 @@
 file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/test-results)
 set(test_output_dir ${CMAKE_BINARY_DIR}/test-results)
 
+option(UNRAVEL_BUILD_BENCHMARKS "Build the opt-in review scale benchmark" OFF)
+if(UNRAVEL_BUILD_BENCHMARKS)
+    qt_add_executable(bench_review bench_review.cpp)
+    target_link_libraries(bench_review PRIVATE unravel_core)
+    set_target_properties(bench_review PROPERTIES WIN32_EXECUTABLE FALSE MACOSX_BUNDLE FALSE)
+    unravel_copy_libclang(bench_review)
+endif()
+
 # The engine on the sample project: indexing, the analyses, layouts
 qt_add_executable(tst_core tst_core.cpp)
 target_link_libraries(tst_core PRIVATE unravel_core Qt6::Test)

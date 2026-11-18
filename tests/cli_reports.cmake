@@ -53,6 +53,39 @@ if(NOT mode STREQUAL "static")
     message(FATAL_ERROR "Stdout must contain a single parseable static-priority report")
 endif()
 
+set(hunk_project "${prefix}/hunk-project")
+file(REMOVE_RECURSE "${hunk_project}")
+file(MAKE_DIRECTORY "${hunk_project}")
+file(WRITE "${hunk_project}/fixture.cpp" "int reviewed() {\n    return 1;\n}\n")
+execute_process(COMMAND git -C "${hunk_project}" init -q RESULT_VARIABLE status ERROR_VARIABLE error)
+if(NOT status EQUAL 0)
+    message(FATAL_ERROR "Could not initialize hunk-history fixture: ${error}")
+endif()
+execute_process(COMMAND git -C "${hunk_project}" add fixture.cpp RESULT_VARIABLE status ERROR_VARIABLE error)
+if(NOT status EQUAL 0)
+    message(FATAL_ERROR "Could not stage hunk-history fixture: ${error}")
+endif()
+execute_process(
+    COMMAND git -C "${hunk_project}" -c user.name=Tester -c user.email=tester@example.test commit -qm initial
+    RESULT_VARIABLE status ERROR_VARIABLE error)
+if(NOT status EQUAL 0)
+    message(FATAL_ERROR "Could not commit hunk-history fixture: ${error}")
+endif()
+execute_process(
+    COMMAND "${CLI}" "${hunk_project}" --focus-hunks --history-days 3650 --focus-json -
+    RESULT_VARIABLE status ERROR_VARIABLE error OUTPUT_VARIABLE output TIMEOUT 60)
+if(NOT status EQUAL 0)
+    message(FATAL_ERROR "Function-hunk CLI export failed: ${error}")
+endif()
+string(JSON mode GET "${output}" mode)
+if(NOT mode STREQUAL "historical-function-hunk-estimate")
+    message(FATAL_ERROR "Expected opt-in function-hunk attribution, got ${mode}")
+endif()
+string(JSON commits GET "${output}" functions 0 functionHunkCommits)
+if(NOT commits GREATER 0)
+    message(FATAL_ERROR "Root-commit hunks should map to the current function")
+endif()
+
 file(WRITE "${prefix}/invalid.json" "{\"version\":2}")
 execute_process(
     COMMAND "${CLI}" --load "${prefix}/index.idx" --architecture "${prefix}/invalid.json"

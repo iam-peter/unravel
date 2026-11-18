@@ -1,0 +1,145 @@
+name: Optional Flow Helper
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: flow-helper-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  QT_VERSION: "6.12.0"
+  LLVM_VERSION: "18"
+  WINDOWS_LLVM_VERSION: "23.1.5"
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libgl1-mesa-dev libegl1 libxkbcommon-dev \
+            libfontconfig1 llvm-18-dev libclang-18-dev clang-18
+
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: linux
+          target: desktop
+          arch: linux_gcc_64
+          cache: true
+
+      - name: Configure, build, and test
+        run: |
+          cmake -S . -B build-flow -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DUNRAVEL_LLVM_ROOT=/usr/lib/llvm-$LLVM_VERSION -DUNRAVEL_ENABLE_FLOW=ON
+          cmake --build build-flow
+          ctest --test-dir build-flow --output-on-failure
+        env:
+          QT_QPA_PLATFORM: offscreen
+
+      - name: Install, relocate, and execute helper
+        run: bash packaging/tests/flow-helper-install-smoke.sh build-flow
+
+  windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          aqtsource: git+https://github.com/miurahr/aqtinstall.git@076e1659807d0b362a3ed684d54c2e9c775eb9c7
+          cache: true
+
+      - name: LLVM and Clang development files
+        shell: bash
+        run: |
+          version="$WINDOWS_LLVM_VERSION"
+          name="clang+llvm-$version-x86_64-pc-windows-msvc"
+          curl -sSfL -o llvm.tar.xz \
+            "https://github.com/llvm/llvm-project/releases/download/llvmorg-$version/$name.tar.xz"
+          mkdir -p /c/llvm
+          tar -xJf llvm.tar.xz -C /c/llvm --strip-components=1 \
+            "$name/include" "$name/lib" "$name/bin"
+          test -f /c/llvm/include/clang/Analysis/CFG.h
+          test -f /c/llvm/include/clang-c/Index.h
+          echo "UNRAVEL_LLVM_ROOT=C:/llvm" >> "$GITHUB_ENV"
+          echo "C:/llvm/bin" >> "$GITHUB_PATH"
+
+      - name: Configure, build, and test
+        run: |
+          cmake -S . -B build-flow -G "Visual Studio 17 2022" -A x64 `
+            "-DUNRAVEL_LLVM_ROOT=$env:UNRAVEL_LLVM_ROOT" -DUNRAVEL_ENABLE_FLOW=ON
+          cmake --build build-flow --config Release
+          ctest --test-dir build-flow -C Release --output-on-failure
+        env:
+          QT_QPA_PLATFORM: offscreen
+
+      - name: Install and test deployed helper
+        shell: pwsh
+        run: |
+          cmake --install build-flow --config Release --prefix "$PWD\flow-stage"
+          windeployqt --release --qmldir qml --qmldir packaging/qml-imports "$PWD\flow-stage\bin\unravel.exe"
+          $helper = "$PWD\flow-stage\bin\unravel-flow.exe"
+          if (-not (Test-Path $helper)) { throw "Installed helper is missing: $helper" }
+          if (-not (Test-Path "$PWD\flow-stage\bin\libclang.dll")) { throw "libclang.dll was not deployed" }
+          if (-not (Get-ChildItem "$PWD\flow-stage\bin\lib\clang" -Filter stddef.h -Recurse)) {
+            throw "Clang resource headers were not deployed"
+          }
+          python packaging/tests/flow-helper-smoke.py $helper
+
+  macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: mac
+          target: desktop
+          arch: clang_64
+          cache: true
+
+      - name: LLVM and Clang development files
+        run: |
+          brew install llvm@18
+          echo "UNRAVEL_LLVM_ROOT=$(brew --prefix llvm@18)" >> "$GITHUB_ENV"
+
+      - name: Configure, build, and test
+        run: |
+          cmake -S . -B build-flow -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            "-DUNRAVEL_LLVM_ROOT=$UNRAVEL_LLVM_ROOT" -DUNRAVEL_ENABLE_FLOW=ON
+          cmake --build build-flow
+          ctest --test-dir build-flow --output-on-failure
+        env:
+          QT_QPA_PLATFORM: offscreen
+
+      - name: Install, deploy, relocate, and execute helper
+        run: |
+          cmake --install build-flow --prefix "$PWD/flow-stage"
+          app=flow-stage/unravel.app
+          helper="$app/Contents/MacOS/unravel-flow"
+          test -x "$helper"
+          macdeployqt "$app" -qmldir="$GITHUB_WORKSPACE/qml" \
+            -qmldir="$GITHUB_WORKSPACE/packaging/qml-imports" \
+            -executable="$app/Contents/MacOS/unravel-cli" \
+            -executable="$helper" -libpath="$UNRAVEL_LLVM_ROOT/lib"
+          ditto "$app" "$PWD/flow-relocated.app"
+          relocated="$PWD/flow-relocated.app/Contents/MacOS/unravel-flow"
+          python3 packaging/tests/flow-helper-smoke.py "$relocated"
+          test -f flow-relocated.app/Contents/Resources/clang/18/include/stddef.h

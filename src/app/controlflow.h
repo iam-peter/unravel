@@ -45,7 +45,12 @@ public:
   Q_INVOKABLE void cancel();
   Q_INVOKABLE void openBlock(int index);
   Q_INVOKABLE void openLocation(const QString &path, int line);
-  Q_INVOKABLE QVariantMap diagram() const;
+  Q_INVOKABLE QVariantMap diagram(bool collapse = false) const;
+  Q_INVOKABLE QVariantMap slice(const QString &node, bool forward) const;
+  Q_INVOKABLE QVariantMap evidenceDiagram(const QVariantList &nodes,
+                                          const QVariantList &edges) const;
+  static QVariantMap compactGraph(const QVariantList &blocks,
+                                  const QVariantList &edges);
 
 signals:
   void changed();
@@ -67,6 +72,7 @@ private:
   QString m_root;
   QString m_source;
   int m_revision = -1;
+  int m_definitionLine = 0;
   bool m_busy = false;
   quint64 m_generation = 0;
   quint64 m_jobGeneration = 0;

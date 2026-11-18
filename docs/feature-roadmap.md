@@ -30,29 +30,31 @@ research before a delivery estimate is credible.
 | Increment | Delivered status |
 |---|---|
 | A | Historical file metrics, editable revision, UTC calendar-day windows, disk caching with metadata/identity/version invalidation, optional bounded Git rename-following heuristic, Metrics/CSV, file churn coloring, and on-demand worktree blame/contributor context. |
-| B | Asynchronous explainable top-20/all Review Focus, project/touched/potential-dependent scopes, Markdown/JSON/CLI, findings context, function priority and file maxima in Metrics/Treemap. Historical attribution is explicitly a file proxy. |
+| B | Asynchronous explainable top-20/all Review Focus, project/touched/potential-dependent scopes, Markdown/JSON/CLI, findings context, function priority and file maxima in Metrics/Treemap. File proxy remains default; opt-in batched historical function-hunk estimates retain evidence and ambiguity. Bounded selection and per-file history joins pass the agreed synthetic-scale ranking gate. |
 | C | Versioned strict path-layer contracts, separate semantic/include scopes, exact reasoned exceptions, unassigned files, evidence, Review panel, Architecture/Matrix highlights, reports and opt-in CLI violation exit status. |
 | D | Cycle-safe transitive header ranking, distinct indexed TU counts, witness chains, cycles, bounded expandable include-only graph, Treemap coloring and bounded CLI JSON. Coverage is explicitly partial/aggregated. |
 | E | Typed Qt connect facts with incomplete/dynamic limits; source labels distinguish addresses and possible virtual calls. Bounded navigable structural relationship queries reuse the active symbol. |
-| F | Optional OFF-default Clang C++ CFG helper, compilation-database/exact-definition selection, bounded source-linked block/successor diagram and evidence lists, cancellable process lifecycle, and declared exclusions. LLVM 18 build and CFG fixtures pass. |
-| G1 | Experimental explicit enum assignments with source evidence; prior state remains unknown. No promotion to a state-machine/invalid-transition checker. |
-| G2 | Experimental compiler-derived pointer/reference type shapes. Ownership, borrowing and lifetime remain unknown; ownership-graph gate not passed. |
-| G3 | No-go: no slices emitted without validated alias/call-effect/branch-join transfer rules. |
+| F | Optional OFF-default Clang C++ CFG helper, compilation-database/exact-definition selection, source-linked diagram, straight-line collapsing retaining original blocks, call-site selection, bounded/cancellable process lifecycle and declared exclusions. LLVM 18 fixtures and Linux relocated-helper execution pass; Windows/macOS optional deployment CI is added. |
+| G1 | Experimental enum/member state graphs with selected storage identity, immediate equality-guard provenance, unknown origins/targets and explicit supported Qt state registrations. Fixture evidence gate passes; no invalid-transition claims without an allowed-transition contract. |
+| G2 | Experimental containment/ownership/shared/borrow/observation graphs, shared allocation-site identities, explicit QObject parents/reparenting and unknown transfers. Shared/borrow/unknown fixture gate passes; no lifetime-safety or general cycle proof. |
+| G3 | Experimental CFG-based local may-def/use graphs and backward/forward slices. Shadowing, reassignment, joins and unknown call effects pass fixtures; aliases/macros/unsupported effects remain unknown. Work and presentation limits are explicit. |
 
-These are first deliveries and gated experiments, **not completion of every
-later stage or release target below**. Remaining work includes historical
-function-hunk attribution, richer CFG interaction
-(straight-line-region collapsing/call selection), complete optional-helper
-deployment validation, and an agreed large-project performance baseline.
-Qt state-machine API reconstruction and ownership/def-use inference are not
-claimed from the experimental enum/type facts.
+The implementation sequence A–F and independently gated G1–G3 prototypes is
+delivered. Research features remain explicitly experimental: passing bounded
+correctness fixtures is not promotion to complete state/lifetime/provenance
+analysis. Items explicitly described as later additions below (historical AST
+comparison, architecture baselines, per-build include provenance, IWYU imports,
+interprocedural summaries and runtime analyzer imports) remain follow-on work,
+not silently claimed features. Linux validation plus Windows/macOS CI coverage
+is the agreed deployment scope; platform runs are not claimed from Linux.
 
 Correctness fixtures cover Git rename/window/merge/cache/mailmap behavior,
 stable priority/scope selection, Qt connect/address/call evidence, contracts,
 diamond/cyclic include impact, CFG branches/backedges/switch fallthrough/returns,
 CLI report shapes and statuses, and app cancellation/project switching.
-Native UI smoke checks exercise the new panels. Tiny fixtures do not certify
-the proposed 200 ms / 1 s / 10% large-project targets below.
+Native UI smoke checks exercise the new panels. The agreed real-project plus
+large synthetic baseline is recorded below, separately from tiny correctness
+fixtures and without claims about industrial projects or reviewer speedup.
 
 ## 1. What already exists, and what should change
 
@@ -446,6 +448,57 @@ Proposed release targets, subject to baseline confirmation:
   fixture, using the existing pan benchmark.
 - Report cold/warm history time, peak memory, cache size, and coverage; do not
   substitute a tiny sample result for large-codebase validation.
+
+#### Recorded baseline and acceptance protocol
+
+Validation on 2026-11-18 used the user-approved pair: Unravel itself and a
+reproducible **synthetic** C++/Git project, not an industrial-project substitute.
+Host: Ubuntu 24.04.5, Intel i9-12900H, 20 logical CPUs, 64 GB RAM; GCC 13.3,
+Qt 6.12, libclang 18, RelWithDebInfo, two indexing workers.
+Unravel was measured from the working tree based on `ac1c467`; the synthetic
+fixture had 100 translation units, one shared header, 100,000 generated
+functions plus the header function, and 101 deterministic non-merge commits.
+Its history tip was `c4c90cc6682e1de5c8fcc2e63ddabaecc83731ab`.
+Both history windows were Unix seconds 0–2145916799 inclusive, pathname policy.
+
+| Measurement | Unravel | Synthetic C++/Git |
+|---|---:|---:|
+| Indexed files / functions | 1,314 / 1,732 | 101 / 100,001 |
+| Symbols / semantic edges | 5,642 / 28,066 | 100,001 / 199,900 |
+| Cold indexing | 124.08 s | 2.79 s |
+| Cold-index process peak RSS | 1,009 MiB | 542 MiB |
+| Cached project top-20 p95, 50 runs | 1.52 ms | 38.64 ms |
+| Cached touched-scope top-20 p95, 50 runs | 0.25 ms | 10.55 ms |
+| Cold / warm history | 117 / 12 ms | 139 / 9 ms |
+| History cache size | 47,620 bytes | 13,673 bytes |
+| Active Git cancellation acknowledgement | 4 ms | 10 ms |
+
+Cold means bypassing Unravel's result cache, not flushing OS/Git caches.
+Warm cache parity compares all per-file metrics, not just result counts.
+Cancellation is requested 20 ms into the slower rename-follow query.
+The first synthetic ranking baseline missed 200 ms (238 ms p95); bounded
+selection and per-file joins reduced it below the target without changing
+ordering. Function-hunk mining is a separate uncached operation and is not
+included in the cached queue latency claim. Window changes retain the same
+indexed Session revision in app tests.
+
+The existing pan benchmark now offers `UNRAVEL_PAN_BENCH=files-paired`:
+three alternating baseline/violation-color phases in one process, identical
+geometry and viewport, 30 warmup and 240 measured frames per phase.
+On the synthetic fixture its visible file graph was 101 nodes / 100 edges.
+Xvfb, OpenGL/Mesa llvmpipe 25.2.8 (LLVM 20.1.2), 1560×940 viewport:
+baseline **12.168 ms**, overlay **12.396 ms**, **+1.88%** mean wall-frame
+time. Independent-process runs were noisy, including a >10% result; use the
+paired protocol, not selected individual runs. Frame-swapped wall intervals
+include display scheduling, not GPU-only time. This gate covers the violation
+edge-rendering path, not rule mining or every renderer/platform.
+
+The benchmark executable and reproduction commands are documented in the
+[README](../README.md#reproducing-the-review-benchmark). It errors when a gate
+is missed, rejects nonempty fixture-generation destinations, and leaves
+generated sources/history available for inspection. These measurements pass
+the agreed fixture gates; they do not establish reviewer speedup, defect
+prediction accuracy, or universal hardware/industrial-scale performance.
 
 Incremental C++ reindexing may become necessary, but it is a separate project.
 Only schedule it when measurements show full indexing blocks these workflows;
