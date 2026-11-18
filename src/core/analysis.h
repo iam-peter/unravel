@@ -49,8 +49,10 @@ QString moduleAt(const QString &module, int depth);
 
 // `filterModule`: only nodes in this module (and what they connect to), "" = all.
 // `folded`: folders shown as one node each, whatever the level
+// `includesOnly`: exclude semantic edges before cycle analysis (modules/files).
 DepGraph dependencyGraph(const CodeModel &m, Level level, int moduleDepth = 0, bool withExternal = false,
-                         const QString &filterModule = QString(), const QStringList &folded = {});
+                         const QString &filterModule = QString(), const QStringList &folded = {},
+                         bool includesOnly = false);
 
 // The folded folder a module is in (the outermost), or ""
 QString foldedFolderOf(const QString &module, const QStringList &folded);

@@ -1633,8 +1633,9 @@ void DependencyScene::build()
 {
     const CodeModel &m = *m_built;
     const auto level = Analysis::Level(std::clamp(m_level, 0, 2));
+    const bool includesOnly = m_includesOnly && level != Analysis::Level::Class;
     m_graph = Analysis::dependencyGraph(m, level, m_moduleDepth, m_showExternal, m_filter,
-                                        Session::instance()->foldedFolders());
+                                        Session::instance()->foldedFolders(), includesOnly);
     const Analysis::DepGraph &g = m_graph;
     const qint32 n = qint32(g.names.size());
 
@@ -1682,9 +1683,9 @@ void DependencyScene::build()
         const Analysis::DepGraph::Link &l = g.links[li];
         if (!index.contains(l.from) || !index.contains(l.to))
             continue;
-        if (m_includesOnly && l.includes == 0)
+        if (includesOnly && l.includes == 0)
             continue;
-        if (!m_includesOnly && l.count == 0 && level == Analysis::Level::Class)
+        if (!includesOnly && l.count == 0 && level == Analysis::Level::Class)
             continue;
         Layout::Link ll;
         ll.from = index.value(l.from);
@@ -1761,9 +1762,9 @@ void DependencyScene::build()
         SceneEdge e;
         e.points = l.points;
         e.link = linkOf[i];
-        e.count = m_includesOnly ? gl.includes : gl.count + gl.includes;
+        e.count = includesOnly ? gl.includes : gl.count + gl.includes;
         int best = int(RefKind::Include), bestCount = gl.includes;
-        if (!m_includesOnly) {
+        if (!includesOnly) {
             for (int k = 0; k < int(RefKind::Count); ++k) {
                 if (gl.kinds[k] > bestCount) {
                     best = k;

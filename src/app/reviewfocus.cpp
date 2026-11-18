@@ -15,7 +15,7 @@ ReviewFocus::ReviewFocus(QObject *parent)
     connect(Session::instance(), &Session::staleChanged, this, [this] {
         if (m_functionHistory)
             reload();
-    });
+    }, Qt::QueuedConnection);
     connect(Hotspots::instance(), &Hotspots::changed, this, &ReviewFocus::reload);
     connect(Changes::instance(), &Changes::changesChanged, this, &ReviewFocus::reload);
     connect(Changes::instance(), &Changes::busyChanged, this, &ReviewFocus::reload);
@@ -75,6 +75,8 @@ void ReviewFocus::setImpactDepth(int value)
 
 void ReviewFocus::reload()
 {
+    if (m_functionHistory)
+        Session::instance()->refreshStaleness();
     if (m_cancel)
         m_cancel->store(true);
     const quint64 generation = ++m_generation;
@@ -117,7 +119,7 @@ void ReviewFocus::reload()
             watcher->deleteLater();
             if (generation != m_generation)
                 return;
-            if (m_functionHistory && Session::instance()->stale()) {
+            if (m_functionHistory && Session::instance()->refreshStaleness()) {
                 reload();
                 return;
             }

@@ -21,6 +21,7 @@
 #include <array>
 #include <cctype>
 #include <thread>
+#include <tuple>
 #include <vector>
 
 namespace Unravel {
@@ -38,6 +39,12 @@ QString take(CXString s)
 QString usrOf(CXCursor c)
 {
     return take(clang_getCursorUSR(c));
+}
+
+auto declarationOrder(const QString &path, const Location &location, const QString &rootSlash)
+{
+    return std::tuple(!path.startsWith(rootSlash), !Project::isHeader(path),
+                      path, location.line, location.col);
 }
 
 bool isFunctionCursor(CXCursorKind k)
@@ -592,7 +599,8 @@ struct Unit {
         s.signature = signatureOf(c, k);
         const Location at = location(clang_getCursorLocation(c));
         s.inProject = inProject(at.file);
-        s.decl = at;
+        const auto canonical = location(clang_getCursorLocation(clang_getCanonicalCursor(c)));
+        s.decl = canonical.valid() ? canonical : at;
         s.access = accessOf(c);
         if (!s.inProject)
             s.flags |= External;
@@ -651,7 +659,9 @@ struct Unit {
         LocalSymbol &s = symbols[id];
         s.inProject = true;
         s.flags &= ~External;
-        if (!s.decl.valid() || !inProject(s.decl.file))
+        if (!s.decl.valid()
+            || declarationOrder(files[at.file].path, at, shared->rootSlash)
+                < declarationOrder(files[s.decl.file].path, s.decl, shared->rootSlash))
             s.decl = at;
         if (s.access == Access::None)
             s.access = accessOf(c);
@@ -1156,7 +1166,6 @@ void merge(Unit &u, CodeModel &model)
             g.name = l.name;
             g.signature = l.signature;
             g.kind = l.kind;
-            g.decl = mapLoc(l.decl);
             if (fresh)
                 g.flags = l.flags;
             g.flags = l.inProject ? (g.flags & ~External) : (g.flags | External);
@@ -1168,8 +1177,12 @@ void merge(Unit &u, CodeModel &model)
             g.type = l.type;
         if (g.access == Access::None)
             g.access = l.access;
-        if (!g.decl.valid())
-            g.decl = mapLoc(l.decl);
+        const Location declaration = mapLoc(l.decl);
+        if (declaration.valid()
+            && (!g.decl.valid()
+                || declarationOrder(model.files[declaration.file].path, declaration, u.shared->rootSlash)
+                    < declarationOrder(model.files[g.decl.file].path, g.decl, u.shared->rootSlash)))
+            g.decl = declaration;
         if (g.parent < 0 && !l.parentUsr.isEmpty()) {
             const qint32 local = u.usrIds.value(l.parentUsr, -1);
             if (local >= 0 && symMap[local] != symMap[i])

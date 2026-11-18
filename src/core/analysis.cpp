@@ -152,7 +152,7 @@ QStringList vendorFolders(const CodeModel &m)
 }
 
 DepGraph dependencyGraph(const CodeModel &m, Level level, int moduleDepth, bool withExternal,
-                         const QString &filterModule, const QStringList &folded)
+                         const QString &filterModule, const QStringList &folded, bool includesOnly)
 {
     DepGraph g;
     g.level = level;
@@ -337,7 +337,7 @@ DepGraph dependencyGraph(const CodeModel &m, Level level, int moduleDepth, bool 
         }
         // References: from where the code is to where the used symbol is declared
         QVector<qint32> declFileOf(ns, -2);
-        for (qint32 i = 0; i < m.refs.size(); ++i) {
+        for (qint32 i = 0; !includesOnly && i < m.refs.size(); ++i) {
             const Reference &r = m.refs[i];
             if (!countsAsDependency(r.kind) || r.to < 0 || (r.flags & RefImplicit))
                 continue;

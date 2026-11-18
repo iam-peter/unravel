@@ -170,6 +170,9 @@ adds priority coloring. Their scope labels and CSV metadata retain the policy.
 
 Merge commits and post-revision edits only map positions; they do not add
 touching commits. Hunk mode requires a fresh index and tracked source files.
+Source freshness is checked before mining and before publishing estimates;
+returning to the application also invalidates estimates after source changes.
+Reindex to refresh stale function extents.
 Metadata discovery is capped at one million first-parent commits; expensive
 diffs cover only the required mapping span, capped at 10,000 commits. Mapping
 is capped at two million work operations and expanded changed lines. Metadata
@@ -177,6 +180,9 @@ discovery, each Git command, and mapping have 120-second deadlines; command
 output is capped at 128 MiB. An empty history window avoids historical diffs.
 
 ### Architecture contracts and header impact
+
+Architecture's includes-only filter computes cycles using include edges alone;
+semantic dependencies cannot create an include-cycle warning.
 
 **Review > Architecture rules** reads optional
 `.unravel/architecture.json` from the project root. For example:

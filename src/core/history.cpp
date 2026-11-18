@@ -1,4 +1,5 @@
 #include "history.h"
+#include "project.h"
 
 #include <QDir>
 #include <QElapsedTimer>
@@ -429,6 +430,16 @@ HunkActivity functionHunks(const QString &dir, const QString &revision, qint64 s
         return result;
     result.shallow = output.trimmed() == "true";
 
+    auto requireCurrentIndex = [&] {
+        if (!Project::sourcesChanged(model))
+            return true;
+        result.functions.clear();
+        result.error = QStringLiteral("Function hunk estimates require a current index; reindex before enabling them");
+        return false;
+    };
+    if (!requireCurrentIndex())
+        return result;
+
     struct CommitDiff {
         QString hash;
         qint64 time = 0;
@@ -514,8 +525,10 @@ HunkActivity functionHunks(const QString &dir, const QString &revision, qint64 s
             return result;
         }
     }
-    if (oldestEligibleIndex < 0)
+    if (oldestEligibleIndex < 0) {
+        requireCurrentIndex();
         return result;
+    }
     const qint64 mappingSpan = oldestEligibleIndex + 1;
     if (mappingSpan > maxCommits) {
         result.error = QStringLiteral("Required first-parent line-mapping span exceeds 10,000 commits; choose a shorter window or a revision closer to it");
@@ -814,6 +827,7 @@ HunkActivity functionHunks(const QString &dir, const QString &revision, qint64 s
             }
         }
     }
+    requireCurrentIndex();
     return result;
 }
 

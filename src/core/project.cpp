@@ -96,6 +96,25 @@ QStringList sourceFiles(const QString &root, bool headersToo)
     return out;
 }
 
+bool sourcesChanged(const CodeModel &model)
+{
+    for (const File &file : model.files) {
+        if (!file.project)
+            continue;
+        const QFileInfo info(file.path);
+        if (!info.exists() || info.lastModified().toMSecsSinceEpoch() > model.indexedAt)
+            return true;
+    }
+    QStringList paths = sourceFiles(model.root, true);
+    if (!Python::interpreter().isEmpty())
+        paths += Python::sourceFiles(model.root);
+    for (const QString &path : paths) {
+        if (model.fileId(path) < 0)
+            return true;
+    }
+    return false;
+}
+
 QString commonRoot(const QStringList &files)
 {
     if (files.isEmpty())

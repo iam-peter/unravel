@@ -107,6 +107,69 @@ private slots:
         QVERIFY(string);
     }
 
+    void declarationsAreStableAcrossUnitOrder()
+    {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        auto write = [&](const QString &name, const QByteArray &text) {
+            QFile file(dir.filePath(name));
+            QVERIFY(file.open(QIODevice::WriteOnly));
+            QCOMPARE(file.write(text), text.size());
+        };
+        write(QStringLiteral("api.h"), "int answer();\n");
+        write(QStringLiteral("a.cpp"), "int answer();\n#include \"api.h\"\nint answer() { return 42; }\n");
+        write(QStringLiteral("b.cpp"), "#include \"api.h\"\nint use() { return answer(); }\n");
+        auto setup = Project::discover(dir.path());
+        for (int threads : {1, 2}) {
+            for (int order = 0; order < 2; ++order) {
+                CodeModel model;
+                QVERIFY(Indexer::run(setup, model, nullptr, {}, threads).ok);
+                bool found = false;
+                for (const Symbol &symbol : model.symbols) {
+                    if (symbol.name != QLatin1String("answer"))
+                        continue;
+                    found = true;
+                    QCOMPARE(model.files[symbol.decl.file].path, dir.filePath(QStringLiteral("api.h")));
+                    QCOMPARE(model.files[symbol.def.file].path, dir.filePath(QStringLiteral("a.cpp")));
+                }
+                QVERIFY(found);
+                std::reverse(setup.units.begin(), setup.units.end());
+            }
+        }
+    }
+
+    void includeOnlyCyclesExcludeSemanticEdges()
+    {
+        CodeModel model;
+        model.root = QStringLiteral("/project");
+        const int a = model.addFile(QStringLiteral("/project/a/a.h"));
+        const int b = model.addFile(QStringLiteral("/project/b/b.h"));
+        model.files[a].includes.append({b, 1});
+        const int type = model.addSymbol(QStringLiteral("A"));
+        model.symbols[type].name = QStringLiteral("A");
+        model.symbols[type].kind = SymbolKind::Class;
+        model.symbols[type].def = {a, 2, 1, 2, 12};
+        model.refs.append({-1, type, RefKind::TypeUse, RefRead, {b, 2, 1, 2, 2}});
+        model.finalize();
+        const auto mixed = Analysis::dependencyGraph(model, Analysis::Level::File);
+        QCOMPARE(mixed.links.size(), 2);
+        QVERIFY(mixed.links.first().cyclic);
+        for (const auto level : {Analysis::Level::File, Analysis::Level::Module}) {
+            const auto includes = Analysis::dependencyGraph(model, level, 0, false, {}, {}, true);
+            for (const auto &link : includes.links)
+                QVERIFY(!link.cyclic);
+        }
+        auto includes = Analysis::dependencyGraph(model, Analysis::Level::File, 0, false, {}, {}, true);
+        QCOMPARE(includes.links.size(), 1);
+        QCOMPARE(includes.links.first().count, 0);
+        model.files[b].includes.append({a, 1});
+        model.finalize();
+        includes = Analysis::dependencyGraph(model, Analysis::Level::File, 0, false, {}, {}, true);
+        QCOMPARE(includes.links.size(), 2);
+        for (const auto &link : includes.links)
+            QVERIFY(link.cyclic);
+    }
+
     void metrics()
     {
         const FunctionMetrics &report = m.symbols[sym(QStringLiteral("wh::Inventory::report"))].metrics;
@@ -668,6 +731,7 @@ private slots:
         model.symbols[beta].name = model.symbols[beta].qualified = QStringLiteral("beta");
         model.symbols[beta].def = {file, 7, 1, 9, 1};
         model.finalize();
+        model.indexedAt = QDateTime::currentMSecsSinceEpoch();
 
         const History::HunkActivity attributed = History::functionHunks(dir.path(), QStringLiteral("HEAD"), since, since, model);
         QVERIFY2(attributed.ready(), qPrintable(attributed.error));
@@ -714,10 +778,16 @@ private slots:
         QVERIFY(Focus::markdown(model, focused).contains(QStringLiteral("all reachable non-merge commits")));
         QVERIFY(Focus::markdown(model, focused).contains(QStringLiteral("merge commits are not counted")));
 
+        QTest::qWait(5);
         write(QStringLiteral("b.cpp"),
               "// shifted one\n// shifted two\n"
               "void alpha() {\n int value = 3;\n return;\n}\n"
               "void beta() {\n return /* touched */;\n}\n");
+        const auto stale = History::functionHunks(dir.path(), QStringLiteral("HEAD"), since, since, model);
+        QVERIFY(!stale.ready());
+        QVERIFY(stale.error.contains(QStringLiteral("current index")));
+        QVERIFY(stale.functions.isEmpty());
+        model.indexedAt = QDateTime::currentMSecsSinceEpoch();
         const auto workingTree = History::functionHunks(dir.path(), QStringLiteral("HEAD"), since, since, model);
         QVERIFY2(workingTree.ready(), qPrintable(workingTree.error));
         QCOMPARE(workingTree.postRevisionChangedFiles, 1);
@@ -737,8 +807,7 @@ private slots:
         QVERIFY(overlap.functions.value(overlapping).ambiguity.contains(QStringLiteral("overlap")));
 
         write(QStringLiteral("untracked.cpp"), "int untracked() { return 0; }\n");
-        CodeModel untrackedModel;
-        untrackedModel.root = dir.path();
+        CodeModel untrackedModel = model;
         const int untrackedFile = untrackedModel.addFile(dir.filePath(QStringLiteral("untracked.cpp")));
         untrackedModel.files[untrackedFile].project = true;
         const int untrackedFunction = untrackedModel.addSymbol(QStringLiteral("untracked"));
@@ -748,6 +817,7 @@ private slots:
             QStringLiteral("untracked");
         untrackedModel.symbols[untrackedFunction].def = {untrackedFile, 1, 1, 1, 30};
         untrackedModel.finalize();
+        untrackedModel.indexedAt = QDateTime::currentMSecsSinceEpoch();
         const auto untracked = History::functionHunks(dir.path(), QStringLiteral("HEAD"), since, since, untrackedModel);
         QVERIFY(!untracked.ready());
         QVERIFY(untracked.error.contains(QStringLiteral("untracked")));
@@ -831,6 +901,7 @@ private slots:
         model.symbols[function].name = model.symbols[function].qualified = QStringLiteral("large");
         model.symbols[function].def = {file, 1, 1, 3002, 1};
         model.finalize();
+        model.indexedAt = QDateTime::currentMSecsSinceEpoch();
 
         const auto result = History::functionHunks(dir.path(), QStringLiteral("HEAD"), since, since, model);
         QVERIFY(!result.ready());
@@ -899,6 +970,7 @@ private slots:
         model.symbols[function].name = model.symbols[function].qualified = QStringLiteral("recent");
         model.symbols[function].def = {file, 1, 1, 1, 40};
         model.finalize();
+        model.indexedAt = QDateTime::currentMSecsSinceEpoch();
 
         const auto recent = History::functionHunks(dir.path(), QStringLiteral("HEAD"), 1700001000, 1700001000, model);
         QVERIFY2(recent.ready(), qPrintable(recent.error));

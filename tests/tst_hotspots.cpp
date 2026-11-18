@@ -11,6 +11,7 @@
 #include <QThreadPool>
 
 #include "hotspots.h"
+#include "changes.h"
 #include "controlflow.h"
 #include "reviewfocus.h"
 #include "models.h"
@@ -22,6 +23,51 @@ class TestHotspots : public QObject
     Q_OBJECT
 
 private slots:
+    void cancellingAndReindexingPreserveSessionStateAndFileIdentity()
+    {
+        QTemporaryDir storage, repo;
+        QVERIFY(storage.isValid() && repo.isValid());
+        qputenv("XDG_CACHE_HOME", storage.path().toUtf8());
+        auto write = [&](const QString &name, const QByteArray &text) {
+            QFile file(repo.filePath(name));
+            QVERIFY(file.open(QIODevice::WriteOnly));
+            QCOMPARE(file.write(text), text.size());
+        };
+        write(QStringLiteral("a.h"), "class A {};\n");
+        write(QStringLiteral("main.cpp"), "#include \"a.h\"\nint answer() { return 42; }\n");
+        Session session(nullptr);
+        bool stopped = false;
+        connect(&session, &Session::stateChanged, &session, [&] {
+            if (session.state() == Session::Indexing && !stopped) {
+                stopped = true;
+                session.cancel();
+                QCOMPARE(session.state(), Session::Idle);
+                QCOMPARE(session.progress(), 0);
+                QVERIFY(!session.hasModel());
+                session.reindex();
+            }
+        });
+        session.open(repo.path());
+        QTRY_VERIFY_WITH_TIMEOUT(stopped && session.state() == Session::Ready, 10000);
+        QVERIFY(session.hasModel());
+        session.activateFile(session.model()->fileId(repo.filePath(QStringLiteral("a.h"))), 1);
+        session.reindex();
+        QTRY_COMPARE_WITH_TIMEOUT(session.state(), Session::Ready, 10000);
+        QCOMPARE(session.model()->files[session.activeFile()].path, repo.filePath(QStringLiteral("a.h")));
+        QCOMPARE(session.focusLine(), 1);
+
+        write(QStringLiteral("b.h"), "class B {};\n");
+        write(QStringLiteral("main.cpp"), "#include \"b.h\"\nint answer() { return 42; }\n");
+        QVERIFY(QFile::remove(repo.filePath(QStringLiteral("a.h"))));
+        session.reindex();
+        QTRY_COMPARE_WITH_TIMEOUT(session.state(), Session::Ready, 10000);
+        QCOMPARE(session.activeFile(), -1);
+        QVERIFY(session.activeSymbol() >= 0);
+        const QString cache = session.cachePath();
+        session.close();
+        QVERIFY(QFile::remove(cache));
+    }
+
     void compactCfgPreservesBranchesCallsAndCycles()
     {
         const QVariantMap source{{QStringLiteral("file"), QStringLiteral("fixture.cpp")},
@@ -251,7 +297,6 @@ private slots:
         QTest::qWait(20);
         write(repo.filePath(QStringLiteral("a.cpp")), "int helper() { return 43; } int answer() { return helper(); }\n");
         focus.setFunctionHistory(true);
-        session.open(repo.path());
         QTRY_VERIFY_WITH_TIMEOUT(session.stale(), 15000);
         QTRY_VERIFY_WITH_TIMEOUT(!focus.busy(), 15000);
         QVERIFY(focus.summary().contains(QStringLiteral("Function-hunk estimate unavailable")));
@@ -306,6 +351,19 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(!hotspots.busy(), 10000);
         QVERIFY(hotspots.ready());
         QCOMPARE(hotspots.days(), 30);
+        session.reindex();
+        QTRY_COMPARE_WITH_TIMEOUT(session.state(), Session::Ready, 15000);
+        QTRY_VERIFY_WITH_TIMEOUT(!hotspots.busy() && !Changes::instance()->busy() && !focus.busy(), 10000);
+        QVERIFY(!session.stale());
+        focus.setFunctionHistory(true);
+        QVERIFY(focus.busy());
+        QThreadPool::globalInstance()->waitForDone();
+        QTest::qSleep(5);
+        write(repo.filePath(QStringLiteral("a.cpp")),
+              "// moved\nint helper() { return 43; } int answer() { return helper(); }\n");
+        QTRY_VERIFY_WITH_TIMEOUT(session.stale() && !focus.busy(), 10000);
+        QCOMPARE(focus.count(), 0);
+        QVERIFY(focus.summary().contains(QStringLiteral("current index")));
         session.close();
         QVERIFY(!hotspots.ready());
         QThreadPool::globalInstance()->waitForDone();

@@ -31,6 +31,12 @@ Session::Session(QObject *parent)
     if (!g_session)
         g_session = this;
     connect(&m_watcher, &QFutureWatcher<Result>::finished, this, &Session::indexingFinished);
+    if (auto *app = qobject_cast<QGuiApplication *>(QCoreApplication::instance())) {
+        connect(app, &QGuiApplication::applicationStateChanged, this, [this](Qt::ApplicationState state) {
+            if (state == Qt::ApplicationActive && m_state == Ready)
+                refreshStaleness();
+        });
+    }
 }
 
 Session::~Session()
@@ -317,8 +323,9 @@ void Session::cancel()
 {
     m_cancel = true;
     ++m_generation;
-    if (m_cmake) {
+    if (m_cmake)
         stopCMake();
+    if (m_state == Discovering || m_state == Indexing) {
         setState(m_model ? Ready : Idle);
         setProgress(0, QString());
     }
@@ -341,29 +348,19 @@ void Session::close()
     emit activeChanged();
 }
 
-bool Session::isStale(const CodeModel &m)
+bool Session::refreshStaleness()
 {
-    for (const File &f : m.files) {
-        if (!f.project)
-            continue;
-        const QFileInfo fi(f.path);
-        if (!fi.exists() || fi.lastModified().toMSecsSinceEpoch() > m.indexedAt)
-            return true;
+    if (m_model && !m_stale && Project::sourcesChanged(*m_model)) {
+        m_stale = true;
+        emit staleChanged();
     }
-    // New sources
-    QStringList now = Project::sourceFiles(m.root, true);
-    if (!Python::interpreter().isEmpty())
-        now += Python::sourceFiles(m.root);
-    for (const QString &p : now) {
-        if (m.fileId(p) < 0)
-            return true;
-    }
-    return false;
+    return m_stale;
 }
 
 void Session::startIndexing(bool useCache)
 {
     stopCMake();
+    m_watcher.waitForFinished();
     m_cancel = false;
     const quint64 generation = ++m_generation;
     setState(Discovering);
@@ -394,7 +391,7 @@ void Session::startIndexing(bool useCache)
                 r.cached = true;
                 r.result.ok = true;
                 r.report = Analysis::analyze(*r.model);
-                r.stale = isStale(*r.model);
+                r.stale = Project::sourcesChanged(*r.model);
                 return r;
             }
             r.loadFailed = true;
@@ -409,6 +406,8 @@ void Session::startIndexing(bool useCache)
         QMetaObject::invokeMethod(this, [this, self, units, modules, generation] {
             if (self && generation == m_generation) {
                 setState(Indexing);
+                if (generation != m_generation)
+                    return;
                 QStringList what;
                 if (units > 0)
                     what << tr("%1 translation units").arg(units);
@@ -517,6 +516,7 @@ void Session::indexingFinished()
 void Session::adopt(std::shared_ptr<CodeModel> model, Analysis::Report report)
 {
     const QString activeUsr = m_model && m_active.symbol >= 0 ? m_model->symbols[m_active.symbol].usr : QString();
+    const QString activePath = m_model && m_active.file >= 0 ? m_model->files[m_active.file].path : QString();
     m_report = std::move(report);
     m_model = model;
     m_revision++;
@@ -525,7 +525,9 @@ void Session::adopt(std::shared_ptr<CodeModel> model, Analysis::Report report)
     m_forward.clear();
     if (!activeUsr.isEmpty())
         m_active.symbol = m_model->symbolId(activeUsr);
-    if (m_active.symbol < 0 && m_active.file >= m_model->files.size())
+    if (!activePath.isEmpty())
+        m_active.file = m_model->fileId(activePath);
+    if (m_active.symbol < 0 && m_active.file < 0)
         m_active = Place();
     emit modelChanged();
     emit activeChanged();

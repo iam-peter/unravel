@@ -11,6 +11,8 @@
 // with include paths guessed from where the headers are.
 namespace Unravel {
 
+class CodeModel;
+
 struct CompileUnit {
     QString file;         // absolute
     QString directory;    // the working directory of the compiler
@@ -43,6 +45,9 @@ QList<CompileUnit> readDatabase(const QString &databaseDir, QString *error);
 
 // Every C and C++ source under `root`, skipping build trees and VCS folders
 QStringList sourceFiles(const QString &root, bool headersToo = false);
+
+// Changed, deleted or newly discovered project sources since this index.
+bool sourcesChanged(const CodeModel &model);
 
 // The common folder of files
 QString commonRoot(const QStringList &files);

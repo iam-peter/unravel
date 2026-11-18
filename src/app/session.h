@@ -80,6 +80,7 @@ public:
     QString error() const { return m_error; }
     bool hasModel() const { return bool(m_model); }
     bool stale() const { return m_stale; }
+    bool refreshStaleness();
     int revision() const { return m_revision; }
     QVariantMap stats() const;
     QStringList recentProjects() const;
@@ -194,7 +195,6 @@ private:
     void runCMake(const QString &root);
     void indexingFinished();
     void adopt(std::shared_ptr<Unravel::CodeModel> model, Unravel::Analysis::Report report);
-    static bool isStale(const Unravel::CodeModel &m);
     void stopCMake();
     void go(const Place &place, bool record);
     void addRecent(const QString &path);
