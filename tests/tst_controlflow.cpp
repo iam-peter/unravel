@@ -29,7 +29,7 @@ private:
     return 0;
   }
 
-private slots:
+private Q_SLOTS:
   void initTestCase() {
     QVERIFY(m_project.isValid());
     m_source = m_project.filePath(QStringLiteral("flow.cpp"));

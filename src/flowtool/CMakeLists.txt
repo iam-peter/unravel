@@ -129,6 +129,9 @@ target_include_directories(unravel_flow_lib
     PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}"
     PRIVATE "${UNRAVEL_CLANG_CPP_INCLUDE_DIR}" ${LLVM_INCLUDE_DIRS} ${CLANG_INCLUDE_DIRS})
 target_link_libraries(unravel_flow_lib PUBLIC unravel_core)
+# Qt's emit, signals and slots macros break Clang's headers (Sema has an
+# emit method since Clang 22); the helper uses none of them
+target_compile_definitions(unravel_flow_lib PUBLIC QT_NO_KEYWORDS)
 if(UNRAVEL_CLANG_CPP_LIBRARY)
     target_link_libraries(unravel_flow_lib PRIVATE
         "${UNRAVEL_CLANG_CPP_LIBRARY}" "${UNRAVEL_LLVM_LIBRARY}")

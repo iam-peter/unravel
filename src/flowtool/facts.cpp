@@ -7,6 +7,7 @@
 #include <clang/AST/RecursiveASTVisitor.h>
 #include <clang/Analysis/CFG.h>
 #include <clang/Basic/SourceManager.h>
+#include <clang/Basic/Version.h>
 #include <clang/Lex/Lexer.h>
 #include <llvm/ADT/StringExtras.h>
 
@@ -17,6 +18,15 @@
 #include <QVector>
 
 #include <algorithm>
+
+// A class's type. Clang 22 stopped keeping it on the declaration
+static clang::QualType classType(const clang::CXXRecordDecl *record) {
+#if CLANG_VERSION_MAJOR >= 22
+  return record->getASTContext().getCanonicalTagType(record);
+#else
+  return record->getASTContext().getRecordType(record);
+#endif
+}
 
 namespace Unravel::Flow {
 
@@ -563,8 +573,8 @@ private:
       const bool qtFactory =
           method && method->isStatic() &&
           method->getNameAsString() == "create" &&
-          templateName(clang::QualType(method->getParent()->getTypeForDecl(),
-                                       0)) == QLatin1String("QSharedPointer");
+          templateName(classType(method->getParent())) ==
+              QLatin1String("QSharedPointer");
       if (api == QLatin1String("std::make_shared") ||
           api == QLatin1String("std::make_unique") || qtFactory)
         return allocation(expr, "allocation-site");
