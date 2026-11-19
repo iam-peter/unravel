@@ -45,8 +45,10 @@ if(NOT LIBCLANG_LIBRARY OR NOT LIBCLANG_INCLUDE_DIR)
     message(FATAL_ERROR "libclang not found: install libclang-dev (or LLVM) or set UNRAVEL_LLVM_ROOT")
 endif()
 message(STATUS "libclang: ${LIBCLANG_LIBRARY} (${LIBCLANG_INCLUDE_DIR})")
-add_library(libclang UNKNOWN IMPORTED)
-set_target_properties(libclang PROPERTIES
+# Namespaced: Clang's own CMake package, which the flow helper loads,
+# defines a target named libclang too
+add_library(Unravel::libclang UNKNOWN IMPORTED)
+set_target_properties(Unravel::libclang PROPERTIES
     IMPORTED_LOCATION ${LIBCLANG_LIBRARY}
     INTERFACE_INCLUDE_DIRECTORIES ${LIBCLANG_INCLUDE_DIR})
 # clang's own headers (stddef.h, stdarg.h, ...) in this LLVM installation:
@@ -110,7 +112,7 @@ add_library(unravel_core STATIC
 )
 target_include_directories(unravel_core PUBLIC src/core)
 target_include_directories(unravel_core PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
-target_link_libraries(unravel_core PUBLIC Qt6::Core libclang)
+target_link_libraries(unravel_core PUBLIC Qt6::Core Unravel::libclang)
 target_compile_definitions(unravel_core PRIVATE UNRAVEL_CLANG_BUILD_RESOURCE_DIR="${UNRAVEL_CLANG_BUILD_RESOURCE_DIR}")
 set_target_properties(unravel_core PROPERTIES AUTOMOC OFF)
 

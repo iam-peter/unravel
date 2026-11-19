@@ -6,6 +6,9 @@ if(NOT DEFINED BUILD_TESTING)
     include(CTest)
 endif()
 
+# LLVM's CMake package runs C checks (Homebrew's looks for histedit.h)
+enable_language(C)
+
 find_package(LLVM CONFIG QUIET
     HINTS
         "${UNRAVEL_LLVM_ROOT}/lib/cmake/llvm"

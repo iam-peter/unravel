@@ -81,6 +81,9 @@ jobs:
 
       - name: Configure, build, and test
         run: |
+          # Stop at the first command that fails, not only the last one
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           cmake -S . -B build-flow -G "Visual Studio 17 2022" -A x64 `
             "-DUNRAVEL_LLVM_ROOT=$env:UNRAVEL_LLVM_ROOT" -DUNRAVEL_ENABLE_FLOW=ON
           cmake --build build-flow --config Release
@@ -91,6 +94,8 @@ jobs:
       - name: Install and test deployed helper
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           cmake --install build-flow --config Release --prefix "$PWD\flow-stage"
           windeployqt --release --qmldir qml --qmldir packaging/qml-imports "$PWD\flow-stage\bin\unravel.exe"
           $helper = "$PWD\flow-stage\bin\unravel-flow.exe"
