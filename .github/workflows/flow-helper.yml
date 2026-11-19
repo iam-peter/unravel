@@ -67,7 +67,8 @@ jobs:
       # conda-forge's LLVM and Clang, not LLVM's own release: that one's
       # static libraries use the static C runtime (/MT) and their own
       # malloc, and can't be linked with Qt, which uses the DLL runtime.
-      # conda-forge builds for the DLL runtime and brings zlib and zstd.
+      # conda-forge builds for the DLL runtime and brings zlib (the zlib
+      # package has its headers and import library) and zstd.
       - uses: mamba-org/setup-micromamba@v2
         with:
           environment-name: llvm
@@ -75,6 +76,7 @@ jobs:
             clangdev=${{ env.WINDOWS_LLVM_VERSION }}
             llvmdev=${{ env.WINDOWS_LLVM_VERSION }}
             libclang=${{ env.WINDOWS_LLVM_VERSION }}
+            zlib
           condarc: |
             channels:
               - conda-forge
@@ -93,6 +95,11 @@ jobs:
           "UNRAVEL_LLVM_ROOT=$($root -replace '\\', '/')" | Out-File $env:GITHUB_ENV -Append
           # Its DLLs (zlib, zstd, libxml2, libclang) for the tests
           "$root\bin" | Out-File $env:GITHUB_PATH -Append
+          # LLVM's PDB support links the DIA SDK, which Visual Studio has;
+          # LLVM finds it through VSINSTALLDIR
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          if (-not (Test-Path "$vs\DIA SDK\include\dia2.h")) { throw "No DIA SDK in $vs" }
+          "VSINSTALLDIR=$vs\" | Out-File $env:GITHUB_ENV -Append
 
       - name: Configure, build, and test
         run: |
