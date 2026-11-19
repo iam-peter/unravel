@@ -95,7 +95,7 @@ Result rank(const CodeModel &model, const History::Activity *activity, const Opt
         if (result.historical) {
             const qint32 file = symbol.def.file;
             if (fileCommits[file] < 0) {
-                const QString path = QDir(historyRepository).relativeFilePath(model.files[file].path);
+                const QString path = History::relativeToRepository(historyRepository, model.files[file].path);
                 if (QDir::isAbsolutePath(path) || path == QLatin1String("..") || path.startsWith(QLatin1String("../"))) {
                     result.error = QStringLiteral("Some functions are outside the history repository; use static priority");
                     result.entries.clear();

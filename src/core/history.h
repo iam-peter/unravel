@@ -29,6 +29,10 @@ inline const QString kWorkingTree = QStringLiteral("WORKTREE");
 
 // The top of the work tree `dir` is in, or "" if it is in none (or git is missing)
 QString repositoryRoot(const QString &dir);
+// `path` relative to `repository` (as git rev-parse --show-toplevel gives
+// it), through symlinks too: on macOS a temporary folder is /var/... while
+// Git resolves it to /private/var/.... Starts with ../ when outside.
+QString relativeToRepository(const QString &repository, const QString &path);
 
 // The latest commits (first parent first), newest first; `path` limits
 // them to those touching it

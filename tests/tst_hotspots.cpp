@@ -189,8 +189,13 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(!hotspots.busy(), 10000);
         QVERIFY2(hotspots.ready(), qPrintable(hotspots.error()));
         QCOMPARE(hotspots.days(), 180);
-        QCOMPARE(hotspots.forFile(repo.filePath(QStringLiteral("a.cpp")))->commits, 1);
-        QCOMPARE(hotspots.forFile(repo.filePath(QStringLiteral("new.cpp")))->commits, 0);
+        // Checked first: a path that doesn't match the repository's fails
+        // here rather than crashing the run
+        const auto *a = hotspots.forFile(repo.filePath(QStringLiteral("a.cpp")));
+        const auto *added = hotspots.forFile(repo.filePath(QStringLiteral("new.cpp")));
+        QVERIFY(a && added);
+        QCOMPARE(a->commits, 1);
+        QCOMPARE(added->commits, 0);
         QTRY_VERIFY_WITH_TIMEOUT(!focus.busy() && focus.count() == 3, 10000);
         const int answer = session.symbolByName(QStringLiteral("answer"));
         const int helper = session.symbolByName(QStringLiteral("helper"));

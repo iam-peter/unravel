@@ -223,7 +223,7 @@ const History::FileActivity *Hotspots::forFile(const QString &path) const
 {
     if (!ready())
         return nullptr;
-    const QString relative = QDir(m_activity.repository).relativeFilePath(path);
+    const QString relative = History::relativeToRepository(m_activity.repository, path);
     if (relative == QLatin1String("..") || relative.startsWith(QLatin1String("../")) || QDir::isAbsolutePath(relative))
         return nullptr;
     const auto it = m_activity.files.constFind(relative);

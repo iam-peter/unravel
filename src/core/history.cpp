@@ -114,6 +114,21 @@ QVector<FileDiff> parseDiffChecked(const QByteArray &diff, const std::function<b
 
 } // namespace
 
+QString relativeToRepository(const QString &repository, const QString &path)
+{
+    const QString plain = QDir(repository).relativeFilePath(path);
+    if (!plain.startsWith(QLatin1String("..")) && !QDir::isAbsolutePath(plain))
+        return plain;
+    const QString realRepository = QFileInfo(repository).canonicalFilePath();
+    const QFileInfo file(path);
+    // The file itself may be gone (a deleted source): its folder then
+    const QString realPath = file.exists() ? file.canonicalFilePath()
+                           : QDir(file.absolutePath()).canonicalPath() + QLatin1Char('/') + file.fileName();
+    if (realRepository.isEmpty() || QDir::isRelativePath(realPath))
+        return plain;
+    return QDir(realRepository).relativeFilePath(realPath);
+}
+
 QString repositoryRoot(const QString &dir)
 {
     if (QStandardPaths::findExecutable(QStringLiteral("git")).isEmpty())
@@ -615,7 +630,7 @@ HunkActivity functionHunks(const QString &dir, const QString &revision, qint64 s
             return result;
         if (!model.files[file].project || model.files[file].generated)
             continue;
-        const QString path = QDir(result.repository).relativeFilePath(model.files[file].path);
+        const QString path = relativeToRepository(result.repository, model.files[file].path);
         if (QDir::isAbsolutePath(path) || path == QLatin1String("..") || path.startsWith(QLatin1String("../")))
             continue;
         auto &items = extents[path];
@@ -849,7 +864,7 @@ Blame blame(const QString &directory, const QString &path, int firstLine, const 
         return result;
     const QString root = QString::fromUtf8(output).trimmed();
     workingDirectory = root;
-    const QString relative = QDir(root).relativeFilePath(path);
+    const QString relative = relativeToRepository(root, path);
     if (QDir::isAbsolutePath(relative) || relative == QLatin1String("..") || relative.startsWith(QLatin1String("../"))) {
         result.error = QStringLiteral("Blame source is outside the Git repository");
         return result;
