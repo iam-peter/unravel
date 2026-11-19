@@ -1188,6 +1188,33 @@ private slots:
             QVERIFY2(d.severity < Diagnostic::Error, qPrintable(d.message));
     }
 
+    // C++23 code using std::expected parses, with a libclang older than 19
+    // and GCC's standard library too
+    void cxx23Expected()
+    {
+        QTemporaryDir dir;
+        QFile source(dir.filePath(QStringLiteral("result.cpp")));
+        QVERIFY(source.open(QIODevice::WriteOnly));
+        source.write("#include <expected>\n#include <string>\n"
+                     "std::expected<int, std::string> parse(int x) { if (x < 0) return std::unexpected(\"negative\"); return x; }\n"
+                     "int main() { return parse(1).value_or(0); }\n");
+        source.close();
+        QFile db(dir.filePath(QStringLiteral("compile_commands.json")));
+        QVERIFY(db.open(QIODevice::WriteOnly));
+        db.write(QStringLiteral("[{\"directory\": \"%1\", \"file\": \"result.cpp\", \"arguments\": [\"c++\", \"-std=c++23\", \"-c\", \"result.cpp\"]}]")
+                     .arg(dir.path()).toUtf8());
+        db.close();
+        const ProjectSetup setup = Project::discover(db.fileName());
+        CodeModel x;
+        QVERIFY(Indexer::run(setup, x).ok);
+        for (const Diagnostic &d : x.diagnostics)
+            QVERIFY2(d.severity < Diagnostic::Error, qPrintable(d.message));
+        bool parse = false;
+        for (const Symbol &s : x.symbols)
+            parse = parse || s.qualified == QLatin1String("parse");
+        QVERIFY(parse);
+    }
+
     // The CMake a build of the project was configured with comes first
     void cmakeOfAnExistingBuild()
     {

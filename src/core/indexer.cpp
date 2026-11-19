@@ -1237,6 +1237,36 @@ QVector<QByteArray> toArgv(const QStringList &args)
     return out;
 }
 
+// The major version of the libclang that is loaded, 0 if it doesn't say
+int clangMajor()
+{
+    static const int major = [] {
+        CXString version = clang_getClangVersion();
+        const QString text = QString::fromUtf8(clang_getCString(version));
+        clang_disposeString(version);
+        const QRegularExpressionMatch m = QRegularExpression(QStringLiteral("version (\\d+)")).match(text);
+        return m.hasMatch() ? m.captured(1).toInt() : 0;
+    }();
+    return major;
+}
+
+// What a libclang older than the code needs to read it. Before 19, clang
+// sets __cpp_concepts to 201907 although it has what C++20 concepts need,
+// so GCC's standard library leaves out std::expected (and what checks for
+// 202002) in C++23 and later: the value clang 19 sets.
+QStringList compatibilityArguments(const QStringList &args)
+{
+    const int major = clangMajor();
+    if (major == 0 || major >= 19)
+        return {};
+    static const QRegularExpression cxx23(QStringLiteral("^-std=(c|gnu)\\+\\+(2[3-9]|2b|2c)$"));
+    for (const QString &a : args) {
+        if (cxx23.match(a).hasMatch())
+            return {QStringLiteral("-D__cpp_concepts=202002L"), QStringLiteral("-Wno-builtin-macro-redefined")};
+    }
+    return {};
+}
+
 // clang's own headers (stddef.h, the intrinsics) for the libclang that is
 // loaded. libclang looks for them beside itself, which works where LLVM is
 // installed but not where a package put libclang next to the program, so a
@@ -1250,13 +1280,9 @@ QString resourceDir()
         const QString given = qEnvironmentVariable("UNRAVEL_CLANG_RESOURCE_DIR");
         if (!given.isEmpty() || !QCoreApplication::instance())
             return given;
-        CXString version = clang_getClangVersion();
-        const QString text = QString::fromUtf8(clang_getCString(version));
-        clang_disposeString(version);
-        const QRegularExpressionMatch m = QRegularExpression(QStringLiteral("version (\\d+)")).match(text);
-        if (!m.hasMatch())
+        if (clangMajor() == 0)
             return QString();
-        const QString app = QCoreApplication::applicationDirPath(), major = m.captured(1);
+        const QString app = QCoreApplication::applicationDirPath(), major = QString::number(clangMajor());
         for (const QString &c : {app + QStringLiteral("/lib/clang/"), app + QStringLiteral("/../lib/clang/"),
                                  app + QStringLiteral("/../Resources/clang/")}) {
             if (QFileInfo::exists(c + major + QStringLiteral("/include/stddef.h")))
@@ -1433,6 +1459,7 @@ IndexResult Indexer::run(const ProjectSetup &setup, CodeModel &model, std::atomi
                     args << QStringLiteral("-resource-dir") << resources;
                 if (!platform.isEmpty() && !args.contains(platform.first()))
                     args << platform;
+                args << compatibilityArguments(args);
                 const QVector<QByteArray> argv = toArgv(args);
                 std::vector<const char *> ptrs;
                 for (const QByteArray &a : argv)
