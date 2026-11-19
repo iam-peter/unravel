@@ -11,6 +11,8 @@
 #include <QProcess>
 #include <QRegularExpression>
 #include <QSet>
+#include <QStandardPaths>
+#include <QVersionNumber>
 
 #include <algorithm>
 
@@ -129,6 +131,85 @@ QString commonRoot(const QStringList &files)
     }
     const QString joined = common.join(QLatin1Char('/'));
     return joined.isEmpty() ? QStringLiteral("/") : joined;
+}
+
+CMakeChoice cmakeFor(const QString &root)
+{
+    CMakeChoice choice;
+    // A build of this project, configured before: its CMakeCache.txt names
+    // the CMake that did it (build*/ or a kit's folder below it, as Qt
+    // Creator makes them), the most recent first
+    QFileInfoList caches;
+    const QDir top(root);
+    for (const QString &b : top.entryList({QStringLiteral("build*"), QStringLiteral("cmake-build-*"), QStringLiteral("out")},
+                                          QDir::Dirs | QDir::NoDotAndDotDot)) {
+        const QString dir = top.filePath(b);
+        caches << QFileInfo(dir + QStringLiteral("/CMakeCache.txt"));
+        for (const QString &kit : QDir(dir).entryList(QDir::Dirs | QDir::NoDotAndDotDot))
+            caches << QFileInfo(dir + QLatin1Char('/') + kit + QStringLiteral("/CMakeCache.txt"));
+    }
+    std::sort(caches.begin(), caches.end(), [](const QFileInfo &a, const QFileInfo &b) {
+        return a.lastModified() > b.lastModified();
+    });
+    const QString home = QDir::cleanPath(root);
+    // What made the project configure there, and is not about that build
+    static const QStringList kept = {QStringLiteral("CMAKE_C_COMPILER"), QStringLiteral("CMAKE_CXX_COMPILER"),
+                                     QStringLiteral("CMAKE_PREFIX_PATH"), QStringLiteral("CMAKE_TOOLCHAIN_FILE")};
+    for (const QFileInfo &cache : std::as_const(caches)) {
+        QFile f(cache.filePath());
+        if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
+            continue;
+        QString command, source;
+        QStringList settings;
+        while (!f.atEnd()) {
+            const QString line = QString::fromUtf8(f.readLine()).trimmed();
+            if (line.startsWith(QLatin1String("CMAKE_COMMAND:INTERNAL="))) {
+                command = line.mid(23);
+            } else if (line.startsWith(QLatin1String("CMAKE_HOME_DIRECTORY:INTERNAL="))) {
+                source = line.mid(30);
+            } else {
+                const qsizetype colon = line.indexOf(QLatin1Char(':')), equals = line.indexOf(QLatin1Char('='));
+                if (colon > 0 && equals > colon && equals + 1 < line.size() && kept.contains(line.left(colon)))
+                    settings << QStringLiteral("-D") + line.left(colon) + QLatin1Char('=') + line.mid(equals + 1);
+            }
+        }
+        if (!command.isEmpty() && QDir::cleanPath(source) == home && QFileInfo(command).isExecutable()) {
+            choice.executable = command;
+            choice.arguments = settings;
+            choice.basedOn = cache.absolutePath();
+            return choice;
+        }
+    }
+
+    // Else the newest of the ones around
+    const QString qt = QLibraryInfo::path(QLibraryInfo::PrefixPath);
+    QStringList candidates = {QStandardPaths::findExecutable(QStringLiteral("cmake"))};
+    for (const QString &dir : {qt + QStringLiteral("/../../Tools/CMake/bin"),
+                               qt + QStringLiteral("/../../Tools/CMake/CMake.app/Contents/bin"),
+                               QStringLiteral("/snap/bin"), QStringLiteral("/opt/homebrew/bin"),
+                               QStringLiteral("/usr/local/bin")}) {
+        candidates << QStandardPaths::findExecutable(QStringLiteral("cmake"), {QDir::cleanPath(dir)});
+    }
+    QVersionNumber bestVersion;
+    QSet<QString> seen;
+    for (const QString &c : std::as_const(candidates)) {
+        const QString real = QFileInfo(c).canonicalFilePath();
+        if (c.isEmpty() || seen.contains(real.isEmpty() ? c : real))
+            continue;
+        seen.insert(real.isEmpty() ? c : real);
+        QProcess p;
+        p.start(c, {QStringLiteral("--version")});
+        if (!p.waitForFinished(5000) || p.exitCode() != 0)
+            continue;
+        const QRegularExpressionMatch v = QRegularExpression(QStringLiteral("version (\\d+\\.\\d+(\\.\\d+)?)"))
+                                              .match(QString::fromLocal8Bit(p.readAllStandardOutput()));
+        const QVersionNumber version = v.hasMatch() ? QVersionNumber::fromString(v.captured(1)) : QVersionNumber();
+        if (choice.executable.isEmpty() || version > bestVersion) {
+            choice.executable = c;
+            bestVersion = version;
+        }
+    }
+    return choice;
 }
 
 QString findDatabase(const QString &dir)
@@ -368,8 +449,26 @@ ProjectSetup discover(const QString &path, const QStringList &extraArgs, const Q
         QSet<QString> seenDirs = {setup.root};
         bool usesQt = false;
         QStringList sources;
+        // <lib/sub/header.h> needs the folder above lib/: from the includes
+        // that name a folder and the headers whose paths end that way
+        static const QRegularExpression includeRe(QStringLiteral("^\\s*#\\s*include\\s*[<\"]([^>\"]+/[^>\"]+)[>\"]"),
+                                                  QRegularExpression::MultilineOption);
+        QHash<QString, QStringList> headersByName;
+        QSet<QString> folderIncludes;
         for (const QString &f : all) {
+            QFile file(f);
+            if (file.open(QIODevice::ReadOnly)) {
+                const QByteArray head = file.read(16384);
+                usesQt = usesQt || head.contains("#include <Q") || head.contains("#include <qt") || head.contains("Q_OBJECT");
+                auto it = includeRe.globalMatch(QString::fromUtf8(head));
+                while (it.hasNext()) {
+                    const QString inc = QDir::cleanPath(it.next().captured(1));
+                    if (!inc.startsWith(QLatin1String("..")) && !QDir::isAbsolutePath(inc))
+                        folderIncludes.insert(inc);
+                }
+            }
             if (isHeader(f)) {
+                headersByName[QFileInfo(f).fileName()] << f;
                 const QString d = QFileInfo(f).absolutePath();
                 if (!seenDirs.contains(d)) {
                     seenDirs.insert(d);
@@ -387,12 +486,16 @@ ProjectSetup discover(const QString &path, const QStringList &extraArgs, const Q
             } else {
                 sources << f;
             }
-            if (!usesQt) {
-                QFile file(f);
-                if (file.open(QIODevice::ReadOnly)) {
-                    const QByteArray head = file.read(8192);
-                    usesQt = head.contains("#include <Q") || head.contains("#include <qt")
-                          || head.contains("Q_OBJECT");
+        }
+        for (const QString &inc : std::as_const(folderIncludes)) {
+            const QString suffix = QLatin1Char('/') + inc;
+            for (const QString &h : headersByName.value(inc.mid(inc.lastIndexOf(QLatin1Char('/')) + 1))) {
+                if (!h.endsWith(suffix))
+                    continue;
+                const QString top = h.left(h.size() - suffix.size());
+                if (!seenDirs.contains(top)) {
+                    seenDirs.insert(top);
+                    includeDirs << top;
                 }
             }
         }

@@ -192,7 +192,7 @@ private:
     void setState(State s);
     void setProgress(qreal p, const QString &text);
     void startIndexing(bool useCache);
-    void runCMake(const QString &root);
+    void runCMake(const QString &root, const Unravel::Project::CMakeChoice &choice);
     void indexingFinished();
     void adopt(std::shared_ptr<Unravel::CodeModel> model, Unravel::Analysis::Report report);
     void stopCMake();

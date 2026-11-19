@@ -370,10 +370,12 @@ void Session::startIndexing(bool useCache)
     const QFileInfo fi(m_projectPath);
     // A CMake project without a compilation database: let CMake write one
     if (!cache && fi.isDir() && m_buildDir.isEmpty() && Project::findDatabase(m_projectPath).isEmpty()
-        && QFileInfo::exists(m_projectPath + QStringLiteral("/CMakeLists.txt"))
-        && !QStandardPaths::findExecutable(QStringLiteral("cmake")).isEmpty()) {
-        runCMake(m_projectPath);
-        return;
+        && QFileInfo::exists(m_projectPath + QStringLiteral("/CMakeLists.txt"))) {
+        const Project::CMakeChoice cmake = Project::cmakeFor(m_projectPath);
+        if (!cmake.executable.isEmpty()) {
+            runCMake(m_projectPath, cmake);
+            return;
+        }
     }
 
     // Loading, indexing, saving and analysing all happen on a worker
@@ -433,10 +435,16 @@ void Session::startIndexing(bool useCache)
     }));
 }
 
-void Session::runCMake(const QString &root)
+void Session::runCMake(const QString &root, const Project::CMakeChoice &choice)
 {
     const QString dir = QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + QStringLiteral("/cmake/")
                       + QString::fromLatin1(QCryptographicHash::hash(root.toUtf8(), QCryptographicHash::Sha1).toHex().left(16));
+    // What an earlier run that failed left there would hold on to its CMake
+    // and its answers: start over
+    if (!QFileInfo::exists(dir + QStringLiteral("/compile_commands.json"))) {
+        QFile::remove(dir + QStringLiteral("/CMakeCache.txt"));
+        QDir(dir + QStringLiteral("/CMakeFiles")).removeRecursively();
+    }
     QDir().mkpath(dir);
     setProgress(0, tr("Asking CMake for a compilation database…"));
     auto *cmake = new QProcess(this);
@@ -446,10 +454,12 @@ void Session::runCMake(const QString &root)
                         QStringLiteral("-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"), QStringLiteral("-DBUILD_TESTING=OFF")};
     // So projects using Qt find the Qt unravel was built with
     args << QStringLiteral("-DCMAKE_PREFIX_PATH=") + QLibraryInfo::path(QLibraryInfo::PrefixPath);
+    // A build of the project's own compilers and prefix path, after: they win
+    args << choice.arguments;
     if (!QStandardPaths::findExecutable(QStringLiteral("ninja")).isEmpty())
         args << QStringLiteral("-G") << QStringLiteral("Ninja");
     const quint64 generation = m_generation;
-    connect(cmake, &QProcess::finished, this, [this, cmake, dir, generation](int code, QProcess::ExitStatus status) {
+    connect(cmake, &QProcess::finished, this, [this, cmake, dir, choice, generation](int code, QProcess::ExitStatus status) {
         // The process that finished, not whatever m_cmake is by now
         const QString output = QString::fromLocal8Bit(cmake->readAll());
         cmake->deleteLater();
@@ -459,17 +469,18 @@ void Session::runCMake(const QString &root)
         if (status == QProcess::NormalExit && code == 0 && QFileInfo::exists(dir + QStringLiteral("/compile_commands.json"))) {
             m_buildDir = dir;
             QSettings().setValue(settingsKey() + QStringLiteral("/buildDir"), dir);
-            m_notes << tr("CMake wrote a compilation database in %1").arg(dir);
+            m_notes << tr("CMake (%1%2) wrote a compilation database in %3")
+                           .arg(choice.executable, choice.basedOn.isEmpty() ? QString() : tr(", set up like %1").arg(choice.basedOn), dir);
         } else {
             const QStringList lines = output.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
-            m_notes << tr("CMake could not configure the project; guessing the flags instead. %1")
-                           .arg(lines.mid(std::max<qsizetype>(0, lines.size() - 3)).join(QLatin1Char(' ')));
+            m_notes << tr("CMake (%1) could not configure the project; guessing the flags instead. %2")
+                           .arg(choice.executable, lines.mid(std::max<qsizetype>(0, lines.size() - 3)).join(QLatin1Char(' ')));
             m_buildDir = QStringLiteral("-");   // don't try again this time
         }
         emit projectChanged();
         startIndexing(false);
     });
-    cmake->start(QStringLiteral("cmake"), args);
+    cmake->start(choice.executable, args);
 }
 
 void Session::indexingFinished()

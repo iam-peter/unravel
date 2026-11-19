@@ -1148,6 +1148,73 @@ private slots:
         QVERIFY(outsideResult.entries.isEmpty());
     }
 
+    // Without a database: <plugin/tools/x.h> from another plugin resolves,
+    // so its types are known and linked to
+    void guessedFolderIncludes()
+    {
+        QTemporaryDir dir;
+        auto write = [&](const QString &name, const QByteArray &text) {
+            QVERIFY(QDir().mkpath(QFileInfo(dir.filePath(name)).absolutePath()));
+            QFile f(dir.filePath(name));
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write(text);
+        };
+        write(QStringLiteral("src/plugins/canvas/tools/controller.h"),
+              "#pragma once\nnamespace Canvas { class Controller { public: void change(); }; }\n");
+        write(QStringLiteral("src/plugins/gradient/observer.cpp"),
+              "#include <canvas/tools/controller.h>\n"
+              "class Observer { public: Observer(Canvas::Controller &c) : m_c{c} {} void on() { m_c.change(); }\n"
+              "private: Canvas::Controller &m_c; };\n");
+        const ProjectSetup setup = Project::discover(dir.path());
+        QCOMPARE(setup.source, ProjectSetup::Guessed);
+        QCOMPARE(setup.units.size(), 1);
+        QVERIFY2(setup.units.first().args.contains(QStringLiteral("-I") + dir.filePath(QStringLiteral("src/plugins"))),
+                 qPrintable(setup.units.first().args.join(QLatin1Char(' '))));
+        CodeModel g;
+        QVERIFY(Indexer::run(setup, g).ok);
+        qint32 observer = -1, controller = -1;
+        for (qint32 i = 0; i < g.symbols.size(); ++i) {
+            if (g.symbols[i].qualified == QLatin1String("Observer"))
+                observer = i;
+            else if (g.symbols[i].qualified == QLatin1String("Canvas::Controller"))
+                controller = i;
+        }
+        QVERIFY(observer >= 0 && controller >= 0);
+        bool linked = false;
+        for (const Edge &e : g.edges)
+            linked = linked || (g.nodeOwner(e.from) == observer && g.nodeOwner(e.to) == controller);
+        QVERIFY(linked);
+        for (const Diagnostic &d : g.diagnostics)
+            QVERIFY2(d.severity < Diagnostic::Error, qPrintable(d.message));
+    }
+
+    // The CMake a build of the project was configured with comes first
+    void cmakeOfAnExistingBuild()
+    {
+#ifdef Q_OS_UNIX
+        QTemporaryDir dir;
+        QVERIFY(QDir().mkpath(dir.filePath(QStringLiteral("build/Desktop_Kit"))));
+        const QString cmake = QStringLiteral("/bin/sh");   // anything executable
+        QFile cache(dir.filePath(QStringLiteral("build/Desktop_Kit/CMakeCache.txt")));
+        QVERIFY(cache.open(QIODevice::WriteOnly));
+        cache.write(QStringLiteral("CMAKE_COMMAND:INTERNAL=%1\nCMAKE_HOME_DIRECTORY:INTERNAL=%2\n"
+                                   "CMAKE_CXX_COMPILER:STRING=/bin/g++-14\nCMAKE_BUILD_TYPE:STRING=Debug\n")
+                        .arg(cmake, dir.path()).toUtf8());
+        cache.close();
+        const Project::CMakeChoice choice = Project::cmakeFor(dir.path());
+        QCOMPARE(choice.executable, cmake);
+        // Its compiler comes along, not what is about that build only
+        QCOMPARE(choice.arguments, QStringList{QStringLiteral("-DCMAKE_CXX_COMPILER=/bin/g++-14")});
+        // A build of another source tree doesn't count
+        QVERIFY(cache.open(QIODevice::WriteOnly));
+        cache.write(QStringLiteral("CMAKE_COMMAND:INTERNAL=%1\nCMAKE_HOME_DIRECTORY:INTERNAL=/elsewhere\n").arg(cmake).toUtf8());
+        cache.close();
+        QVERIFY(Project::cmakeFor(dir.path()).executable != cmake);
+#else
+        QSKIP("Uses /bin/sh as the CMake");
+#endif
+    }
+
     void cleanArguments()
     {
         const QStringList argv = {"/usr/bin/c++", "-Iinclude", "-DX=1", "-o", "out.o", "-c", "src/a.cpp", "-MD", "-MF", "a.d",

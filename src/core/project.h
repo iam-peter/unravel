@@ -36,6 +36,17 @@ namespace Project {
 // compile_commands.json in `dir`, `dir/build*` or one level below
 QString findDatabase(const QString &dir);
 
+// How to let CMake configure `root`: like a build of it that was already
+// configured (its CMake, which was new enough, and its compilers and
+// prefix path, which suited the project), else with the newest CMake on
+// PATH, from Qt's installer, Snap or Homebrew. No executable without any.
+struct CMakeChoice {
+    QString executable;
+    QStringList arguments;   // -D settings taken from the existing build
+    QString basedOn;         // that build's folder, if any
+};
+CMakeChoice cmakeFor(const QString &root);
+
 // From a folder (the project root) or a compile_commands.json. `extraArgs`
 // go to every unit. `buildDir`, when set, is where to look for the database.
 ProjectSetup discover(const QString &path, const QStringList &extraArgs = {}, const QString &buildDir = {});
