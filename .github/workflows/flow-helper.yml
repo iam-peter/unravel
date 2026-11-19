@@ -64,43 +64,35 @@ jobs:
           aqtsource: git+https://github.com/miurahr/aqtinstall.git@076e1659807d0b362a3ed684d54c2e9c775eb9c7
           cache: true
 
-      - name: LLVM and Clang development files
-        shell: bash
-        run: |
-          version="$WINDOWS_LLVM_VERSION"
-          name="clang+llvm-$version-x86_64-pc-windows-msvc"
-          curl -sSfL -o llvm.tar.xz \
-            "https://github.com/llvm/llvm-project/releases/download/llvmorg-$version/$name.tar.xz"
-          mkdir -p /c/llvm
-          tar -xJf llvm.tar.xz -C /c/llvm --strip-components=1 \
-            "$name/include" "$name/lib" "$name/bin"
-          test -f /c/llvm/include/clang/Analysis/CFG.h
-          test -f /c/llvm/include/clang-c/Index.h
-          echo "UNRAVEL_LLVM_ROOT=C:/llvm" >> "$GITHUB_ENV"
-          echo "C:/llvm/bin" >> "$GITHUB_PATH"
+      # conda-forge's LLVM and Clang, not LLVM's own release: that one's
+      # static libraries use the static C runtime (/MT) and their own
+      # malloc, and can't be linked with Qt, which uses the DLL runtime.
+      # conda-forge builds for the DLL runtime and brings zlib and zstd.
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: llvm
+          create-args: >-
+            clangdev=${{ env.WINDOWS_LLVM_VERSION }}
+            llvmdev=${{ env.WINDOWS_LLVM_VERSION }}
+            libclang=${{ env.WINDOWS_LLVM_VERSION }}
+          condarc: |
+            channels:
+              - conda-forge
+          cache-environment: true
+          init-shell: none
 
-      # What LLVM's static libraries link and its release leaves out: zlib
-      # and zstd (static, with the shared C runtime, so no DLL comes along)
-      # and the DIA SDK, which Visual Studio has and LLVM finds through
-      # VSINSTALLDIR
-      - name: zlib, zstd and the DIA SDK
+      - name: LLVM and Clang development files
         run: |
           $ErrorActionPreference = 'Stop'
-          $PSNativeCommandUseErrorActionPreference = $true
-          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install zlib:x64-windows-static-md zstd:x64-windows-static-md
-          $zlib = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static-md"
-          "ZLIB_PREFIX=$zlib" | Out-File $env:GITHUB_ENV -Append
-          # vcpkg names the static library zs.lib, a name FindZLIB doesn't try
-          $lib = Get-ChildItem "$zlib\lib" -Filter "*.lib" | Where-Object { $_.Name -match '^(zs|zlib|zlibstatic|z)\.lib$' } | Select-Object -First 1
-          if (-not $lib) { throw "No zlib library in $zlib\lib: $(Get-ChildItem "$zlib\lib" | Out-String)" }
-          "ZLIB_LIBRARY=$($lib.FullName)" | Out-File $env:GITHUB_ENV -Append
-          # LLVM's Findzstd takes a library for static only by its _static
-          # name, and its exports want zstd::libzstd_static
-          Copy-Item "$zlib\lib\zstd.lib" "$zlib\lib\zstd_static.lib"
-          "ZSTD_LIBRARY=$zlib\lib\zstd_static.lib" | Out-File $env:GITHUB_ENV -Append
-          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
-          if (-not (Test-Path "$vs\DIA SDK\include\dia2.h")) { throw "No DIA SDK in $vs" }
-          "VSINSTALLDIR=$vs\" | Out-File $env:GITHUB_ENV -Append
+          $root = "$env:MAMBA_ROOT_PREFIX\envs\llvm\Library"
+          foreach ($f in "include\clang\Analysis\CFG.h", "include\clang-c\Index.h", "lib\libclang.lib",
+                         "bin\libclang.dll", "lib\cmake\llvm\LLVMConfig.cmake", "lib\cmake\clang\ClangConfig.cmake") {
+            if (-not (Test-Path "$root\$f")) { throw "Missing from the conda environment: $f" }
+          }
+          if (-not (Get-ChildItem "$root\lib\clang" -Filter stddef.h -Recurse)) { throw "No clang resource headers in $root\lib\clang" }
+          "UNRAVEL_LLVM_ROOT=$($root -replace '\\', '/')" | Out-File $env:GITHUB_ENV -Append
+          # Its DLLs (zlib, zstd, libxml2, libclang) for the tests
+          "$root\bin" | Out-File $env:GITHUB_PATH -Append
 
       - name: Configure, build, and test
         run: |
@@ -109,8 +101,7 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $true
           cmake -S . -B build-flow -G "Visual Studio 17 2022" -A x64 `
             "-DUNRAVEL_LLVM_ROOT=$env:UNRAVEL_LLVM_ROOT" -DUNRAVEL_ENABLE_FLOW=ON `
-            "-DCMAKE_PREFIX_PATH=$env:QT_ROOT_DIR;$env:ZLIB_PREFIX" "-DZLIB_LIBRARY=$env:ZLIB_LIBRARY" `
-            "-Dzstd_LIBRARY=$env:ZSTD_LIBRARY" "-Dzstd_INCLUDE_DIR=$env:ZLIB_PREFIX\include"
+            "-DCMAKE_PREFIX_PATH=$env:QT_ROOT_DIR;$env:UNRAVEL_LLVM_ROOT"
           cmake --build build-flow --config Release
           ctest --test-dir build-flow -C Release --output-on-failure
         env:
