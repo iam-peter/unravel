@@ -79,13 +79,27 @@ jobs:
           echo "UNRAVEL_LLVM_ROOT=C:/llvm" >> "$GITHUB_ENV"
           echo "C:/llvm/bin" >> "$GITHUB_PATH"
 
+      # What LLVM's static libraries link and its release leaves out: zlib
+      # (static, with the shared C runtime, so no DLL comes along) and the
+      # DIA SDK, which Visual Studio has and LLVM finds through VSINSTALLDIR
+      - name: zlib and the DIA SDK
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install zlib:x64-windows-static-md
+          "ZLIB_PREFIX=$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static-md" | Out-File $env:GITHUB_ENV -Append
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          if (-not (Test-Path "$vs\DIA SDK\include\dia2.h")) { throw "No DIA SDK in $vs" }
+          "VSINSTALLDIR=$vs\" | Out-File $env:GITHUB_ENV -Append
+
       - name: Configure, build, and test
         run: |
           # Stop at the first command that fails, not only the last one
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
           cmake -S . -B build-flow -G "Visual Studio 17 2022" -A x64 `
-            "-DUNRAVEL_LLVM_ROOT=$env:UNRAVEL_LLVM_ROOT" -DUNRAVEL_ENABLE_FLOW=ON
+            "-DUNRAVEL_LLVM_ROOT=$env:UNRAVEL_LLVM_ROOT" -DUNRAVEL_ENABLE_FLOW=ON `
+            "-DCMAKE_PREFIX_PATH=$env:QT_ROOT_DIR;$env:ZLIB_PREFIX"
           cmake --build build-flow --config Release
           ctest --test-dir build-flow -C Release --output-on-failure
         env:
