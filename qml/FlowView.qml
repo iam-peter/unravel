@@ -13,12 +13,13 @@ Item {
     id: view
     property bool active: false
 
-    // The function shown: the active symbol when it is one
+    // The function shown, or the class whose methods are: the active
+    // symbol when it is one
     property int root: -1
     property int target: -1
     function follow() {
         const i = Session.activeInfo
-        if (i && i.isFunction)
+        if (i && (i.isFunction || i.isType))
             root = i.id
     }
     Component.onCompleted: follow()
@@ -58,7 +59,12 @@ Item {
                     height: 28
                     verticalAlignment: Text.AlignVCenter
                     width: Math.min(implicitWidth, 360)
-                    text: view.root >= 0 ? Session.symbolInfo(view.root).qualified + "()" : qsTr("Pick a function")
+                    text: {
+                        if (view.root < 0)
+                            return qsTr("Pick a function or a class")
+                        const i = Session.symbolInfo(view.root)
+                        return i.isFunction ? i.qualified + "()" : i.qualified
+                    }
                     font.weight: Styles.Primitives.fontWeight.semiBold
                     elide: Text.ElideMiddle
                 }
@@ -202,12 +208,14 @@ Item {
                                 TapHandler { onTapped: node.treeView.toggleExpanded(node.row) }
                             }
                             Icon {
-                                name: node.recursive ? "repeat" : node.dispatch ? "git-fork" : "function-square"
+                                // A class at the top, its methods below
+                                readonly property bool callable: node.kind >= 8 && node.kind <= 12
+                                name: node.recursive ? "repeat" : node.dispatch ? "git-fork" : callable ? "function-square" : Theme.kindIcon(node.kind)
                                 size: 14
-                                color: node.recursive ? Theme.danger : node.dispatch ? Theme.namespaceColor : Theme.functionColor
+                                color: node.recursive ? Theme.danger : node.dispatch ? Theme.namespaceColor : Theme.kindColor(node.kind)
                             }
                             Label {
-                                text: node.name + "()"
+                                text: node.name + (node.kind >= 8 && node.kind <= 12 ? "()" : "")
                                 elide: Text.ElideRight
                                 Layout.fillWidth: true
                                 font.italic: node.isVirtual

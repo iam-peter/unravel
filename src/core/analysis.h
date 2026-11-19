@@ -125,6 +125,12 @@ Subgraph callPaths(const CodeModel &m, qint32 from, qint32 to, int maxDepth = 8)
 // What `root` calls (or is called by) up to `depth` levels
 Subgraph callNeighbourhood(const CodeModel &m, qint32 root, int depth, bool callees, bool callers,
                            int maxNodes = 400);
+// The same from several functions at once (a class's methods)
+Subgraph callNeighbourhood(const CodeModel &m, const QVector<qint32> &roots, int depth, bool callees, bool callers,
+                           int maxNodes = 400);
+// A class's own functions (methods, constructors, operators), not the ones
+// the compiler made, in the order of the code
+QVector<qint32> methodsOf(const CodeModel &m, qint32 type);
 
 // --- Findings --------------------------------------------------------------
 

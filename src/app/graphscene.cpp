@@ -1425,25 +1425,54 @@ void CallGraphScene::setVertical(bool v)
 void CallGraphScene::build()
 {
     const CodeModel &m = *m_built;
-    if (m_symbol < 0 || m_symbol >= m.symbols.size())
-        return;
-    qint32 root = m_symbol;
-    // A class: start from its methods' calls through the class node
-    if (!isFunction(m.symbols[root].kind)) {
-        m_summary = tr("Pick a function to see its calls");
+    if (m_symbol < 0 || m_symbol >= m.symbols.size()) {
+        m_summary = tr("Pick a function or a class: in the graph, the project tree, the code or the search (Ctrl+K)");
         return;
     }
-    Analysis::Subgraph sub = m_target >= 0 ? Analysis::callPaths(m, root, m_target, std::max(m_depth, 8))
-                                           : Analysis::callNeighbourhood(m, root, m_depth, m_callees, m_callers, 300);
+    const qint32 root = m_symbol;
+    // A function, or a class through all its methods
+    const bool type = isType(m.symbols[root].kind);
+    const QVector<qint32> roots = isFunction(m.symbols[root].kind) ? QVector<qint32>{root}
+                                  : type ? Analysis::methodsOf(m, root) : QVector<qint32>();
+    if (roots.isEmpty()) {
+        m_summary = type ? tr("%1 has no functions of its own to follow").arg(m.symbols[root].name)
+                         : tr("Pick a function or a class to see its calls");
+        return;
+    }
+    Analysis::Subgraph sub;
+    if (m_target >= 0) {
+        // Every path from any of them, merged
+        QSet<qint32> nodes;
+        QSet<QPair<qint32, qint32>> edges;
+        for (qint32 r : roots) {
+            const Analysis::Subgraph p = Analysis::callPaths(m, r, m_target, std::max(m_depth, 8));
+            nodes.unite(QSet<qint32>(p.nodes.cbegin(), p.nodes.cend()));
+            for (qsizetype i = 0; i < p.edges.size(); ++i) {
+                if (!edges.contains(p.edges[i])) {
+                    edges.insert(p.edges[i]);
+                    sub.edges << p.edges[i];
+                    sub.dispatch << p.dispatch[i];
+                }
+            }
+        }
+        sub.nodes = QVector<qint32>(nodes.cbegin(), nodes.cend());
+        std::sort(sub.nodes.begin(), sub.nodes.end());
+    } else {
+        sub = Analysis::callNeighbourhood(m, roots, m_depth, m_callees, m_callers, 300);
+    }
+    const QSet<qint32> rootSet(roots.cbegin(), roots.cend());
     QHash<qint32, int> index;
     QVector<Layout::Node> lnodes;
     QVector<qint32> syms;
+    int hiddenLibrary = 0;
     for (qint32 s : std::as_const(sub.nodes)) {
         const Symbol &sym = m.symbols[s];
-        if (m_hidden.contains(s) && s != root)
+        if (m_hidden.contains(s) && !rootSet.contains(s))
             continue;
-        if (!m_showExternal && sym.has(External) && s != root && s != m_target)
+        if (!m_showExternal && sym.has(External) && !rootSet.contains(s) && s != m_target) {
+            ++hiddenLibrary;
             continue;
+        }
         index.insert(s, int(syms.size()));
         syms << s;
         Layout::Node n;
@@ -1483,7 +1512,7 @@ void CallGraphScene::build()
         n[QStringLiteral("w")] = lnodes[i].w;
         n[QStringLiteral("h")] = lnodes[i].h;
         n[QStringLiteral("external")] = sym.has(External);
-        n[QStringLiteral("center")] = s == root;
+        n[QStringLiteral("center")] = rootSet.contains(s);
         n[QStringLiteral("target")] = s == m_target;
         n[QStringLiteral("virtual")] = sym.has(Virtual);
         n[QStringLiteral("complexity")] = sym.metrics.complexity;
@@ -1524,13 +1553,20 @@ void CallGraphScene::build()
         e.cyclic = e.fromSymbol == e.toSymbol || l.reversed;
         m_edges << e;
     }
-    if (m_target >= 0)
+    if (m_target >= 0) {
         m_summary = sub.nodes.isEmpty() ? tr("No call path from %1 to %2 within %3 calls")
                                               .arg(m.symbols[root].name, m.symbols[m_target].name).arg(std::max(m_depth, 8))
                                         : tr("Call paths from %1 to %2: %3 functions")
                                               .arg(m.symbols[root].name, m.symbols[m_target].name).arg(syms.size());
-    else
+    } else if (type) {
+        m_summary = tr("%1: %2 methods, %3 functions, %4 calls")
+                        .arg(m.symbols[root].name).arg(roots.size()).arg(syms.size()).arg(m_edges.size());
+    } else {
         m_summary = tr("%1: %2 functions, %3 calls").arg(m.symbols[root].name).arg(syms.size()).arg(m_edges.size());
+    }
+    // Calls into Qt or the standard library only: say where they went
+    if (hiddenLibrary > 0)
+        m_summary += tr(" · %n library functions hidden: switch on Libraries", "", hiddenLibrary);
 }
 
 // --- DependencyScene ----------------------------------------------------------------

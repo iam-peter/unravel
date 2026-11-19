@@ -1216,6 +1216,12 @@ void CallTree::build(int node) const
         m_nodes.append(c);
         m_nodes[node].children.append(int(m_nodes.size() - 1));
     };
+    // A class: its methods, each with its calls (or callers) below
+    if (isType(m.symbols[sym].kind)) {
+        for (qint32 f : Analysis::methodsOf(m, sym))
+            add(f, -1, 1, false);
+        return;
+    }
     if (!m_callers) {
         // A virtual method may run any override
         if (m.symbols[sym].has(Virtual) && n.dispatch == false) {
@@ -1283,6 +1289,8 @@ bool CallTree::hasChildren(const QModelIndex &parent) const
     if (n.recursive || !m_model)
         return false;
     const CodeModel &m = *m_model;
+    if (isType(m.symbols[n.symbol].kind))
+        return !Analysis::methodsOf(m, n.symbol).isEmpty();
     if (!m_callers) {
         if (m.symbols[n.symbol].has(Virtual))
             return true;

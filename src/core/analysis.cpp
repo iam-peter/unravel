@@ -758,10 +758,35 @@ Subgraph callPaths(const CodeModel &m, qint32 from, qint32 to, int maxDepth)
 
 Subgraph callNeighbourhood(const CodeModel &m, qint32 root, int depth, bool callees, bool callers, int maxNodes)
 {
-    Subgraph g;
     if (root < 0)
+        return {};
+    return callNeighbourhood(m, QVector<qint32>{root}, depth, callees, callers, maxNodes);
+}
+
+QVector<qint32> methodsOf(const CodeModel &m, qint32 type)
+{
+    QVector<qint32> out;
+    if (type < 0 || type >= m.symbols.size())
+        return out;
+    for (qint32 ch : m.symbols[type].children) {
+        const Symbol &s = m.symbols[ch];
+        if (isFunction(s.kind) && !s.has(Implicit) && !s.has(FromMacro))
+            out << ch;
+    }
+    std::sort(out.begin(), out.end(), [&](qint32 a, qint32 b) {
+        const Location la = m.symbols[a].where(), lb = m.symbols[b].where();
+        return la.file != lb.file ? la.file < lb.file : la.line < lb.line;
+    });
+    return out;
+}
+
+Subgraph callNeighbourhood(const CodeModel &m, const QVector<qint32> &roots, int depth, bool callees, bool callers,
+                           int maxNodes)
+{
+    Subgraph g;
+    if (roots.isEmpty())
         return g;
-    QSet<qint32> nodes = {root};
+    QSet<qint32> nodes(roots.cbegin(), roots.cend());
     QSet<quint64> edgeSet;
     auto addEdge = [&](qint32 a, qint32 b, bool dispatch) {
         const quint64 k = (quint64(quint32(a)) << 32) | quint32(b);
@@ -772,7 +797,7 @@ Subgraph callNeighbourhood(const CodeModel &m, qint32 root, int depth, bool call
         g.dispatch.append(dispatch);
     };
     auto walk = [&](bool forward) {
-        QVector<qint32> frontier = {root};
+        QVector<qint32> frontier = roots;
         for (int d = 0; d < depth && !frontier.isEmpty(); ++d) {
             QVector<qint32> next;
             for (qint32 v : std::as_const(frontier)) {
