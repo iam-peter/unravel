@@ -7,7 +7,8 @@
 #include <QVariantList>
 #include <QtQml/qqmlregistration.h>
 
-class ControlFlow final : public QObject {
+// Not final: QML derives from the types it creates (MSVC insists)
+class ControlFlow : public QObject {
   Q_OBJECT
   QML_ELEMENT
   QML_SINGLETON
