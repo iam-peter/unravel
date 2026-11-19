@@ -80,19 +80,24 @@ jobs:
           echo "C:/llvm/bin" >> "$GITHUB_PATH"
 
       # What LLVM's static libraries link and its release leaves out: zlib
-      # (static, with the shared C runtime, so no DLL comes along) and the
-      # DIA SDK, which Visual Studio has and LLVM finds through VSINSTALLDIR
-      - name: zlib and the DIA SDK
+      # and zstd (static, with the shared C runtime, so no DLL comes along)
+      # and the DIA SDK, which Visual Studio has and LLVM finds through
+      # VSINSTALLDIR
+      - name: zlib, zstd and the DIA SDK
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
-          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install zlib:x64-windows-static-md
+          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install zlib:x64-windows-static-md zstd:x64-windows-static-md
           $zlib = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static-md"
           "ZLIB_PREFIX=$zlib" | Out-File $env:GITHUB_ENV -Append
           # vcpkg names the static library zs.lib, a name FindZLIB doesn't try
           $lib = Get-ChildItem "$zlib\lib" -Filter "*.lib" | Where-Object { $_.Name -match '^(zs|zlib|zlibstatic|z)\.lib$' } | Select-Object -First 1
           if (-not $lib) { throw "No zlib library in $zlib\lib: $(Get-ChildItem "$zlib\lib" | Out-String)" }
           "ZLIB_LIBRARY=$($lib.FullName)" | Out-File $env:GITHUB_ENV -Append
+          # LLVM's Findzstd takes a library for static only by its _static
+          # name, and its exports want zstd::libzstd_static
+          Copy-Item "$zlib\lib\zstd.lib" "$zlib\lib\zstd_static.lib"
+          "ZSTD_LIBRARY=$zlib\lib\zstd_static.lib" | Out-File $env:GITHUB_ENV -Append
           $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
           if (-not (Test-Path "$vs\DIA SDK\include\dia2.h")) { throw "No DIA SDK in $vs" }
           "VSINSTALLDIR=$vs\" | Out-File $env:GITHUB_ENV -Append
@@ -104,7 +109,8 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $true
           cmake -S . -B build-flow -G "Visual Studio 17 2022" -A x64 `
             "-DUNRAVEL_LLVM_ROOT=$env:UNRAVEL_LLVM_ROOT" -DUNRAVEL_ENABLE_FLOW=ON `
-            "-DCMAKE_PREFIX_PATH=$env:QT_ROOT_DIR;$env:ZLIB_PREFIX" "-DZLIB_LIBRARY=$env:ZLIB_LIBRARY"
+            "-DCMAKE_PREFIX_PATH=$env:QT_ROOT_DIR;$env:ZLIB_PREFIX" "-DZLIB_LIBRARY=$env:ZLIB_LIBRARY" `
+            "-Dzstd_LIBRARY=$env:ZSTD_LIBRARY" "-Dzstd_INCLUDE_DIR=$env:ZLIB_PREFIX\include"
           cmake --build build-flow --config Release
           ctest --test-dir build-flow -C Release --output-on-failure
         env:
