@@ -33,6 +33,12 @@ public:
 
     // Counts lines and lines with code (not blank, not only a comment)
     static void countLines(const QString &path, qint32 *lines, qint32 *codeLines);
+
+    // `args` with what clang needs beside them here and a compiler would
+    // have added by itself: clang's own headers for this libclang, the
+    // macOS SDK, Visual Studio's version check let pass, std::expected for
+    // a clang before 19. For other clang front ends too (the flow helper).
+    static QStringList withSystemArguments(QStringList args);
 };
 
 } // namespace Unravel

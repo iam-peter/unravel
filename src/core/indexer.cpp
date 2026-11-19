@@ -1328,6 +1328,23 @@ QStringList platformArguments()
 
 } // namespace
 
+QStringList Indexer::withSystemArguments(QStringList args)
+{
+    const QString resources = resourceDir();
+    const QStringList platform = platformArguments();
+    if (!resources.isEmpty() && !args.contains(QLatin1String("-resource-dir"))) {
+        bool given = false;
+        for (const QString &a : std::as_const(args))
+            given = given || a.startsWith(QLatin1String("-resource-dir="));
+        if (!given)
+            args << QStringLiteral("-resource-dir") << resources;
+    }
+    if (!platform.isEmpty() && !args.contains(platform.first()))
+        args << platform;
+    args << compatibilityArguments(args);
+    return args;
+}
+
 void Indexer::countLines(const QString &path, qint32 *lines, qint32 *codeLines)
 {
     *lines = 0;
@@ -1425,8 +1442,6 @@ IndexResult Indexer::run(const ProjectSetup &setup, CodeModel &model, std::atomi
     QMutex mutex;
     std::atomic<qint64> waitNs{0}, mergeNs{0}, parseNs{0};
 
-    const QString resources = resourceDir();
-    const QStringList platform = platformArguments();
     auto worker = [&] {
         CXIndex index = clang_createIndex(0, 0);
         CXIndexAction action = clang_IndexAction_create(index);
@@ -1455,11 +1470,7 @@ IndexResult Indexer::run(const ProjectSetup &setup, CodeModel &model, std::atomi
                 unit.cancel = cancel;
                 QStringList args = attempt == 0 ? cu.args : Project::minimalArguments(cu.args)
                                                                 << QStringLiteral("-ferror-limit=0");
-                if (!resources.isEmpty() && !args.contains(QLatin1String("-resource-dir")))
-                    args << QStringLiteral("-resource-dir") << resources;
-                if (!platform.isEmpty() && !args.contains(platform.first()))
-                    args << platform;
-                args << compatibilityArguments(args);
+                args = withSystemArguments(args);
                 const QVector<QByteArray> argv = toArgv(args);
                 std::vector<const char *> ptrs;
                 for (const QByteArray &a : argv)

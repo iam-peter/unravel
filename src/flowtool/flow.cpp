@@ -29,6 +29,7 @@
 
 #include <llvm/ADT/StringExtras.h>
 
+#include "indexer.h"
 #include "project.h"
 
 namespace Unravel::Flow {
@@ -412,9 +413,13 @@ QByteArray generate(const QString &projectPath, const QString &sourceFile,
     return {};
   }
 
+  // What the indexer adds too: clang's own headers (ClangTool would look
+  // for them beside this helper, not beside the clang it links), the macOS
+  // SDK and the rest
+  const QStringList args = Indexer::withSystemArguments(unit->args);
   std::vector<std::string> arguments;
-  arguments.reserve(size_t(unit->args.size()));
-  for (const QString &arg : unit->args)
+  arguments.reserve(size_t(args.size()));
+  for (const QString &arg : args)
     arguments.push_back(arg.toStdString());
   clang::tooling::FixedCompilationDatabase database(
       unit->directory.toStdString(), arguments);
